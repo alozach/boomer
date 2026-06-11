@@ -87,6 +87,21 @@ class SoundPlayer:
         self._config.setdefault("midi_mappings", {})[str(note)] = name
         self._save_config()
 
+    def rename_sound(self, old_name: str, new_name: str) -> tuple[bool, str]:
+        old_path = self._find_sound_file(old_name)
+        if old_path is None:
+            return False, f"Son `{old_name}` introuvable."
+        if self.sound_exists(new_name):
+            return False, f"Un son nommé `{new_name}` existe déjà."
+        ext = os.path.splitext(old_path)[1]
+        os.rename(old_path, os.path.join(self.sounds_dir, new_name + ext))
+        mappings = self._config.get("midi_mappings", {})
+        for note in list(mappings.keys()):
+            if mappings[note] == old_name:
+                mappings[note] = new_name
+        self._save_config()
+        return True, ""
+
     def get_volume(self) -> float:
         return pygame.mixer.music.get_volume() if not self._muted else self._volume_before_mute
 
@@ -117,3 +132,6 @@ class SoundPlayer:
         self._muted = False
         self._current_volume = self._volume_before_mute
         return self._current_volume
+
+    def stop(self):
+        pygame.mixer.stop()

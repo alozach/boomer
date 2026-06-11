@@ -27,14 +27,23 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine) -> App:
         action = parts[0].lower() if parts else ""
         arg = parts[1].strip() if len(parts) > 1 else ""
 
-        if action == "play":
+        if action in ("help", "aide", ""):
+            say(_usage())
+        elif action == "play":
             _cmd_play(say, player, arg)
         elif action == "add":
             _cmd_add(say, player, command, arg)
+        elif action == "rename":
+            _cmd_rename(say, player, arg)
         elif action == "list":
             _cmd_list(say, player)
         elif action == "tts":
             _cmd_tts(say, tts, arg)
+        elif action == "voice":
+            _cmd_voice(say, tts, arg)
+        elif action == "stop":
+            player.stop()
+            say(":black_square_for_stop: Lecture arrêtée.")
         elif action == "mute":
             player.mute()
             say(":mute: Son coupé.")
@@ -44,7 +53,7 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine) -> App:
         elif action in ("volume", "vol"):
             _cmd_volume(say, player, arg)
         else:
-            say(_usage())
+            say(f":x: Commande inconnue : `{action}`\n\n{_usage()}")
 
     @app.event("message")
     def handle_message(event, client, say):
@@ -80,7 +89,6 @@ def _cmd_add(say, player: SoundPlayer, command: dict, name: str):
         say("Usage : `/boomer add <nom>`")
         return
     if player.sound_exists(name):
-        # on stocke le nom avec un flag overwrite
         key = (command["channel_id"], command["user_id"])
         _pending_additions[key] = f"__overwrite__{name}"
         say(
@@ -92,6 +100,19 @@ def _cmd_add(say, player: SoundPlayer, command: dict, name: str):
         key = (command["channel_id"], command["user_id"])
         _pending_additions[key] = name
         say(f":inbox_tray: Prêt à ajouter `{name}`. Envoie maintenant le fichier audio dans ce canal.")
+
+
+def _cmd_rename(say, player: SoundPlayer, arg: str):
+    parts = arg.split(maxsplit=1)
+    if len(parts) != 2:
+        say("Usage : `/boomer rename <ancien-nom> <nouveau-nom>`")
+        return
+    old_name, new_name = parts
+    ok, reason = player.rename_sound(old_name, new_name)
+    if ok:
+        say(f":pencil2: Son `{old_name}` renommé en `{new_name}`.")
+    else:
+        say(f":x: {reason}")
 
 
 def _cmd_list(say, player: SoundPlayer):
@@ -107,8 +128,32 @@ def _cmd_tts(say, tts: TtsEngine, text: str):
     if not text:
         say("Usage : `/boomer tts <texte>`")
         return
-    say(f":speaking_head_in_silhouette: *{text}*")
+    voice = tts.get_current_voice()
+    voice_hint = f" _(voix : `{voice}`)_" if voice else ""
+    say(f":speaking_head_in_silhouette: *{text}*{voice_hint}")
     threading.Thread(target=tts.speak, args=(text,), daemon=True).start()
+
+
+def _cmd_voice(say, tts: TtsEngine, arg: str):
+    if arg in ("list", "liste"):
+        voices = tts.list_voices()
+        if not voices:
+            say(":x: Aucune voix disponible.")
+            return
+        current = tts.get_current_voice()
+        lines = []
+        for v in voices:
+            marker = " ◀ active" if v["id"] == current else ""
+            lines.append(f"• `{v['id']}` — {v['name']}{marker}")
+        say(f":microphone: Voix disponibles :\n" + "\n".join(lines))
+    elif arg:
+        voice_id = tts.set_voice(arg)
+        if voice_id:
+            say(f":white_check_mark: Voix changée : `{voice_id}`")
+        else:
+            say(f":x: Voix `{arg}` introuvable. Utilise `/boomer voice list` pour voir les voix disponibles.")
+    else:
+        say("Usage : `/boomer voice list` ou `/boomer voice <identifiant>`")
 
 
 def _cmd_volume(say, player: SoundPlayer, arg: str):
@@ -166,10 +211,15 @@ def _usage() -> str:
     return (
         "*Commandes disponibles :*\n"
         "• `/boomer play <nom>` — jouer un son\n"
+        "• `/boomer stop` — arrêter la lecture en cours\n"
         "• `/boomer add <nom>` — ajouter un son (puis envoyer le fichier)\n"
-        "• `/boomer list` — lister les sons\n"
+        "• `/boomer rename <ancien> <nouveau>` — renommer un son\n"
+        "• `/boomer list` — lister les sons disponibles\n"
         "• `/boomer tts <texte>` — synthèse vocale\n"
+        "• `/boomer voice list` — lister les voix TTS disponibles\n"
+        "• `/boomer voice <id>` — changer la voix TTS\n"
         "• `/boomer mute` — couper le son\n"
         "• `/boomer unmute` — rétablir le son\n"
-        "• `/boomer volume up|down|<0-100>` — régler le volume"
+        "• `/boomer volume up|down|<0-100>` — régler le volume\n"
+        "• `/boomer help` — afficher cette aide"
     )

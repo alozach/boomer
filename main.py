@@ -25,7 +25,7 @@ def main():
     midi_thread = threading.Thread(target=midi.start, daemon=True, name="midi-listener")
     midi_thread.start()
 
-    app = create_slack_app(player, tts)
+    app = create_slack_app(player, tts, midi)
 
     def shutdown(sig, frame):
         logging.info("Arrêt en cours...")

@@ -4,20 +4,33 @@ import tempfile
 import threading
 import requests
 from slack_bolt import App
+from slack_sdk import WebClient
 from boomer.sound_player import SoundPlayer
 from boomer.tts_engine import TtsEngine
+from boomer.midi_listener import MidiListener
 
 logger = logging.getLogger(__name__)
+
+_NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+def _note_name(note: int) -> str:
+    return f"{_NOTE_NAMES[note % 12]}{(note // 12) - 1}"
 
 # (channel_id, user_id) -> nom de son en attente d'un fichier
 _pending_additions: dict[tuple[str, str], str] = {}
 
+# (channel_id, user_id) -> état d'assignation MIDI en cours
+_pending_maps: dict[tuple[str, str], dict] = {}
+_pending_maps_lock = threading.Lock()
 
-def create_slack_app(player: SoundPlayer, tts: TtsEngine) -> App:
+
+def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener) -> App:
     app = App(
         token=os.environ["SLACK_BOT_TOKEN"],
         signing_secret=os.environ["SLACK_SIGNING_SECRET"],
     )
+    # WebClient réutilisable pour les callbacks asynchrones (hors contexte de requête)
+    slack_client = WebClient(token=os.environ["SLACK_BOT_TOKEN"])
 
     @app.command("/boomer")
     def handle_boomer(ack, command, say):
@@ -37,6 +50,8 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine) -> App:
             _cmd_rename(say, player, arg)
         elif action == "list":
             _cmd_list(say, player)
+        elif action == "map":
+            _cmd_map(say, slack_client, player, midi, command["channel_id"], command["user_id"], arg)
         elif action == "tts":
             _cmd_tts(say, tts, arg)
         elif action == "voice":
@@ -113,6 +128,102 @@ def _cmd_rename(say, player: SoundPlayer, arg: str):
         say(f":pencil2: Son `{old_name}` renommé en `{new_name}`.")
     else:
         say(f":x: {reason}")
+
+
+def _cmd_map(say, client: WebClient, player: SoundPlayer, midi: MidiListener, channel: str, user: str, name: str):
+    if not name:
+        say("Usage : `/boomer map <nom>`")
+        return
+    if not player.sound_exists(name):
+        say(f":x: Son `{name}` introuvable. Utilise `/boomer list` pour voir les sons disponibles.")
+        return
+    if midi.has_interceptor():
+        say(":hourglass: Une assignation est déjà en cours. Attends qu'elle se termine (60 s max).")
+        return
+
+    key = (channel, user)
+
+    def post(text: str):
+        client.chat_postMessage(channel=channel, text=text)
+
+    def cancel_pending():
+        with _pending_maps_lock:
+            state = _pending_maps.pop(key, None)
+        if state:
+            state.get("timer") and state["timer"].cancel()
+            midi.clear_note_interceptor()
+
+    def on_note(note: int) -> bool:
+        with _pending_maps_lock:
+            state = _pending_maps.get(key)
+        if state is None:
+            midi.clear_note_interceptor()
+            return False
+
+        note_label = _note_name(note)
+        mappings = player.get_midi_mapping()
+        existing = mappings.get(note)
+
+        if state["awaiting_confirm"]:
+            if note == state["conflict_note"]:
+                # Confirmation : on écrase
+                player.set_midi_mapping(note, state["name"])
+                cancel_pending()
+                post(f":white_check_mark: Touche `{note_label}` → `{state['name']}` (remplace `{state['conflict_name']}`).")
+            else:
+                # Autre touche pressée : on repart depuis le début avec cette touche
+                if existing is None:
+                    player.set_midi_mapping(note, state["name"])
+                    cancel_pending()
+                    post(f":white_check_mark: Touche `{note_label}` → `{state['name']}`.")
+                else:
+                    with _pending_maps_lock:
+                        state["awaiting_confirm"] = True
+                        state["conflict_note"] = note
+                        state["conflict_name"] = existing
+                    post(
+                        f":warning: La touche `{note_label}` joue déjà `{existing}`. "
+                        f"Appuie à nouveau sur cette touche pour confirmer le remplacement."
+                    )
+            return True
+
+        if existing is None:
+            player.set_midi_mapping(note, state["name"])
+            cancel_pending()
+            post(f":white_check_mark: Touche `{note_label}` → `{state['name']}`.")
+        else:
+            with _pending_maps_lock:
+                state["awaiting_confirm"] = True
+                state["conflict_note"] = note
+                state["conflict_name"] = existing
+            post(
+                f":warning: La touche `{note_label}` joue déjà `{existing}`. "
+                f"Appuie à nouveau sur cette touche pour confirmer le remplacement."
+            )
+        return True
+
+    def on_timeout():
+        with _pending_maps_lock:
+            if key not in _pending_maps:
+                return
+        cancel_pending()
+        post(f":timer_clock: Assignation de `{name}` annulée (aucune touche pressée dans le délai imparti).")
+
+    timer = threading.Timer(60.0, on_timeout)
+    timer.daemon = True
+
+    with _pending_maps_lock:
+        _pending_maps[key] = {
+            "name": name,
+            "awaiting_confirm": False,
+            "conflict_note": None,
+            "conflict_name": None,
+            "timer": timer,
+        }
+
+    midi.set_note_interceptor(on_note)
+    timer.start()
+    say(f":musical_keyboard: Appuie sur la touche MIDI à assigner à `{name}`… (60 s)")
 
 
 def _cmd_list(say, player: SoundPlayer):
@@ -214,6 +325,7 @@ def _usage() -> str:
         "• `/boomer stop` — arrêter la lecture en cours\n"
         "• `/boomer add <nom>` — ajouter un son (puis envoyer le fichier)\n"
         "• `/boomer rename <ancien> <nouveau>` — renommer un son\n"
+        "• `/boomer map <nom>` — assigner un son à une touche MIDI (interactif)\n"
         "• `/boomer list` — lister les sons disponibles\n"
         "• `/boomer tts <texte>` — synthèse vocale\n"
         "• `/boomer voice list` — lister les voix TTS disponibles\n"

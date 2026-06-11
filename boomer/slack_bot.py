@@ -16,10 +16,10 @@ _NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 def _note_name(note: int) -> str:
     return f"{_NOTE_NAMES[note % 12]}{(note // 12) - 1}"
 
-# (channel_id, user_id) -> nom de son en attente d'un fichier
+# (channel_id, user_id) -> sound name waiting for a file upload
 _pending_additions: dict[tuple[str, str], str] = {}
 
-# (channel_id, user_id) -> état d'assignation MIDI en cours
+# (channel_id, user_id) -> ongoing MIDI assignment state
 _pending_maps: dict[tuple[str, str], dict] = {}
 _pending_maps_lock = threading.Lock()
 
@@ -29,10 +29,10 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener) ->
         token=os.environ["SLACK_BOT_TOKEN"],
         signing_secret=os.environ["SLACK_SIGNING_SECRET"],
     )
-    # WebClient réutilisable pour les callbacks asynchrones (hors contexte de requête)
+    # Reusable WebClient for async callbacks outside the Slack request context
     slack_client = WebClient(token=os.environ["SLACK_BOT_TOKEN"])
 
-    @app.command("/boomer")
+    @app.command("/boomer_v3")
     def handle_boomer(ack, command, say):
         ack()
         text = command.get("text", "").strip()
@@ -91,17 +91,17 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener) ->
 
 def _cmd_play(say, player: SoundPlayer, name: str):
     if not name:
-        say("Usage : `/boomer play <nom>`")
+        say("Usage : `/boomer_v3 play <nom>`")
         return
     if player.play(name):
         say(f":arrow_forward: Lecture de `{name}`.")
     else:
-        say(f":x: Son `{name}` introuvable. Utilise `/boomer list` pour voir les sons disponibles.")
+        say(f":x: Son `{name}` introuvable. Utilise `/boomer_v3 list` pour voir les sons disponibles.")
 
 
 def _cmd_add(say, player: SoundPlayer, command: dict, name: str):
     if not name:
-        say("Usage : `/boomer add <nom>`")
+        say("Usage : `/boomer_v3 add <nom>`")
         return
     if player.sound_exists(name):
         key = (command["channel_id"], command["user_id"])
@@ -120,7 +120,7 @@ def _cmd_add(say, player: SoundPlayer, command: dict, name: str):
 def _cmd_rename(say, player: SoundPlayer, arg: str):
     parts = arg.split(maxsplit=1)
     if len(parts) != 2:
-        say("Usage : `/boomer rename <ancien-nom> <nouveau-nom>`")
+        say("Usage : `/boomer_v3 rename <ancien-nom> <nouveau-nom>`")
         return
     old_name, new_name = parts
     ok, reason = player.rename_sound(old_name, new_name)
@@ -132,10 +132,10 @@ def _cmd_rename(say, player: SoundPlayer, arg: str):
 
 def _cmd_map(say, client: WebClient, player: SoundPlayer, midi: MidiListener, channel: str, user: str, name: str):
     if not name:
-        say("Usage : `/boomer map <nom>`")
+        say("Usage : `/boomer_v3 map <nom>`")
         return
     if not player.sound_exists(name):
-        say(f":x: Son `{name}` introuvable. Utilise `/boomer list` pour voir les sons disponibles.")
+        say(f":x: Son `{name}` introuvable. Utilise `/boomer_v3 list` pour voir les sons disponibles.")
         return
     if midi.has_interceptor():
         say(":hourglass: Une assignation est déjà en cours. Attends qu'elle se termine (60 s max).")
@@ -166,22 +166,26 @@ def _cmd_map(say, client: WebClient, player: SoundPlayer, midi: MidiListener, ch
 
         if state["awaiting_confirm"]:
             if note == state["conflict_note"]:
-                # Confirmation : on écrase
+                # Confirmed: overwrite
                 player.set_midi_mapping(note, state["name"])
                 cancel_pending()
                 post(f":white_check_mark: Touche `{note_label}` → `{state['name']}` (remplace `{state['conflict_name']}`).")
             else:
-                # Autre touche pressée : on repart depuis le début avec cette touche
+                prev_note_label = _note_name(state["conflict_note"])
                 if existing is None:
                     player.set_midi_mapping(note, state["name"])
                     cancel_pending()
-                    post(f":white_check_mark: Touche `{note_label}` → `{state['name']}`.")
+                    post(
+                        f":leftwards_arrow_with_hook: Confirmation pour `{prev_note_label}` annulée.\n"
+                        f":white_check_mark: Touche `{note_label}` → `{state['name']}`."
+                    )
                 else:
                     with _pending_maps_lock:
                         state["awaiting_confirm"] = True
                         state["conflict_note"] = note
                         state["conflict_name"] = existing
                     post(
+                        f":leftwards_arrow_with_hook: Confirmation pour `{prev_note_label}` annulée.\n"
                         f":warning: La touche `{note_label}` joue déjà `{existing}`. "
                         f"Appuie à nouveau sur cette touche pour confirmer le remplacement."
                     )
@@ -237,7 +241,7 @@ def _cmd_list(say, player: SoundPlayer):
 
 def _cmd_tts(say, tts: TtsEngine, text: str):
     if not text:
-        say("Usage : `/boomer tts <texte>`")
+        say("Usage : `/boomer_v3 tts <texte>`")
         return
     voice = tts.get_current_voice()
     voice_hint = f" _(voix : `{voice}`)_" if voice else ""
@@ -262,9 +266,9 @@ def _cmd_voice(say, tts: TtsEngine, arg: str):
         if voice_id:
             say(f":white_check_mark: Voix changée : `{voice_id}`")
         else:
-            say(f":x: Voix `{arg}` introuvable. Utilise `/boomer voice list` pour voir les voix disponibles.")
+            say(f":x: Voix `{arg}` introuvable. Utilise `/boomer_v3 voice list` pour voir les voix disponibles.")
     else:
-        say("Usage : `/boomer voice list` ou `/boomer voice <identifiant>`")
+        say("Usage : `/boomer_v3 voice list` ou `/boomer_v3 voice <identifiant>`")
 
 
 def _cmd_volume(say, player: SoundPlayer, arg: str):
@@ -279,7 +283,7 @@ def _cmd_volume(say, player: SoundPlayer, arg: str):
         player.set_volume(level)
         say(f":loud_sound: Volume réglé à {int(level * 100)} %.")
     else:
-        say("Usage : `/boomer volume up|down|<0-100>`")
+        say("Usage : `/boomer_v3 volume up|down|<0-100>`")
 
 
 def _download_and_save(say, player: SoundPlayer, name: str, file_info: dict, overwrite: bool):
@@ -321,17 +325,17 @@ def _download_and_save(say, player: SoundPlayer, name: str, file_info: dict, ove
 def _usage() -> str:
     return (
         "*Commandes disponibles :*\n"
-        "• `/boomer play <nom>` — jouer un son\n"
-        "• `/boomer stop` — arrêter la lecture en cours\n"
-        "• `/boomer add <nom>` — ajouter un son (puis envoyer le fichier)\n"
-        "• `/boomer rename <ancien> <nouveau>` — renommer un son\n"
-        "• `/boomer map <nom>` — assigner un son à une touche MIDI (interactif)\n"
-        "• `/boomer list` — lister les sons disponibles\n"
-        "• `/boomer tts <texte>` — synthèse vocale\n"
-        "• `/boomer voice list` — lister les voix TTS disponibles\n"
-        "• `/boomer voice <id>` — changer la voix TTS\n"
-        "• `/boomer mute` — couper le son\n"
-        "• `/boomer unmute` — rétablir le son\n"
-        "• `/boomer volume up|down|<0-100>` — régler le volume\n"
-        "• `/boomer help` — afficher cette aide"
+        "• `/boomer_v3 play <nom>` — jouer un son\n"
+        "• `/boomer_v3 stop` — arrêter la lecture en cours\n"
+        "• `/boomer_v3 add <nom>` — ajouter un son (puis envoyer le fichier)\n"
+        "• `/boomer_v3 rename <ancien> <nouveau>` — renommer un son\n"
+        "• `/boomer_v3 map <nom>` — assigner un son à une touche MIDI (interactif)\n"
+        "• `/boomer_v3 list` — lister les sons disponibles\n"
+        "• `/boomer_v3 tts <texte>` — synthèse vocale\n"
+        "• `/boomer_v3 voice list` — lister les voix TTS disponibles\n"
+        "• `/boomer_v3 voice <id>` — changer la voix TTS\n"
+        "• `/boomer_v3 mute` — couper le son\n"
+        "• `/boomer_v3 unmute` — rétablir le son\n"
+        "• `/boomer_v3 volume up|down|<0-100>` — régler le volume\n"
+        "• `/boomer_v3 help` — afficher cette aide"
     )

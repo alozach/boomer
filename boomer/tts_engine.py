@@ -22,7 +22,7 @@ class TtsEngine:
         return result
 
     def set_voice(self, identifier: str) -> str | None:
-        """Cherche une voix par ID ou nom partiel. Retourne l'ID si trouvée, None sinon."""
+        """Find a voice by partial ID or name match. Returns the voice ID if found, None otherwise."""
         engine = pyttsx3.init()
         voices = engine.getProperty("voices") or []
         engine.stop()
@@ -50,7 +50,7 @@ class TtsEngine:
                 engine.stop()
                 self.player.play_file(tmp_path)
             except Exception:
-                logger.exception("Erreur TTS pour le texte : %s", text)
+                logger.exception("TTS failed for text: %s", text)
             finally:
                 if tmp_path and os.path.exists(tmp_path):
                     os.unlink(tmp_path)

@@ -52,7 +52,7 @@ class SoundPlayer:
         with self._lock:
             sound = pygame.mixer.Sound(path)
             sound.play()
-            # attendre la fin de lecture pour les fichiers temporaires (TTS)
+            # block until playback finishes; needed for temporary TTS files
             while pygame.mixer.get_busy():
                 pygame.time.wait(50)
 
@@ -68,7 +68,7 @@ class SoundPlayer:
         return self._find_sound_file(name) is not None
 
     def add_sound(self, name: str, source_path: str, overwrite: bool = False) -> bool:
-        """Copie un fichier audio dans le répertoire sounds. Retourne False si le son existe déjà et overwrite=False."""
+        """Copy an audio file into the sounds directory. Returns False if the sound already exists and overwrite=False."""
         if self.sound_exists(name) and not overwrite:
             return False
         if self.sound_exists(name) and overwrite:
@@ -110,7 +110,7 @@ class SoundPlayer:
         self._volume = level
         if not self._muted:
             pygame.mixer.music.set_volume(level)
-        # pygame.mixer.Sound.set_volume doit être appliqué par canal ; on stocke pour les prochains sons
+        # pygame.mixer.Sound.set_volume is per-instance; store level to apply on future playback calls
         self._current_volume = level
 
     def volume_up(self, step: float = 0.1) -> float:

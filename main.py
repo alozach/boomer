@@ -28,7 +28,7 @@ def main():
     app = create_slack_app(player, tts, midi)
 
     def shutdown(sig, frame):
-        logging.info("Arrêt en cours...")
+        logging.info("Shutting down...")
         midi.stop()
 
     signal.signal(signal.SIGINT, shutdown)
@@ -38,11 +38,11 @@ def main():
     if app_token:
         from slack_bolt.adapter.socket_mode import SocketModeHandler
         handler = SocketModeHandler(app, app_token)
-        logging.info("Démarrage en mode Socket.")
+        logging.info("Starting in Socket Mode.")
         handler.start()
     else:
         port = int(os.getenv("PORT", 3000))
-        logging.info("Démarrage en mode HTTP sur le port %d.", port)
+        logging.info("Starting in HTTP mode on port %d.", port)
         app.start(port=port)
 
 

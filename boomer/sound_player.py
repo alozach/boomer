@@ -6,7 +6,7 @@ import pygame
 
 
 SUPPORTED_EXTENSIONS = {".wav", ".mp3", ".ogg", ".flac", ".aiff"}
-MAX_VOLUME = 0.2
+MAX_VOLUME = 1.0
 
 
 class SoundPlayer:

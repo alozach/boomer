@@ -6,6 +6,7 @@ import pygame
 
 
 SUPPORTED_EXTENSIONS = {".wav", ".mp3", ".ogg", ".flac", ".aiff"}
+MAX_VOLUME = 0.2
 
 
 class SoundPlayer:
@@ -103,18 +104,14 @@ class SoundPlayer:
         return True, ""
 
     def get_volume(self) -> float:
-        return pygame.mixer.music.get_volume() if not self._muted else self._volume_before_mute
+        return self._current_volume
 
     def set_volume(self, level: float):
-        level = max(0.0, min(1.0, level))
-        self._volume = level
-        if not self._muted:
-            pygame.mixer.music.set_volume(level)
         # pygame.mixer.Sound.set_volume is per-instance; store level to apply on future playback calls
-        self._current_volume = level
+        self._current_volume = max(0.0, min(MAX_VOLUME, level))
 
     def volume_up(self, step: float = 0.1) -> float:
-        new_vol = min(1.0, self._current_volume + step)
+        new_vol = min(MAX_VOLUME, self._current_volume + step)
         self.set_volume(new_vol)
         return new_vol
 

@@ -17,9 +17,9 @@ class SoundPlayer:
         pygame.mixer.init()
         os.makedirs(sounds_dir, exist_ok=True)
         self._config = self._load_config()
-        self._current_volume: float = 1.0
+        self._current_volume: float = 0.02
         self._muted: bool = False
-        self._volume_before_mute: float = 1.0
+        self._volume_before_mute: float = 0.02
 
     def _load_config(self) -> dict:
         if not os.path.exists(self.config_path):

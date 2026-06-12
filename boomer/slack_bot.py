@@ -279,9 +279,13 @@ def _cmd_volume(say, player: SoundPlayer, arg: str):
         vol = player.volume_down()
         say(f":sound: Volume : {int(vol * 100)} %")
     elif arg.rstrip("%").isdigit():
-        level = int(arg.rstrip("%")) / 100
-        player.set_volume(level)
-        say(f":loud_sound: Volume réglé à {int(level * 100)} %.")
+        requested = int(arg.rstrip("%")) / 100
+        player.set_volume(requested)
+        actual = player.get_volume()
+        if actual < requested:
+            say(f":loud_sound: Volume réglé à {int(actual * 100)} % (max autorisé — valeur demandée : {int(requested * 100)} %).")
+        else:
+            say(f":loud_sound: Volume réglé à {int(actual * 100)} %.")
     else:
         say("Usage : `/boomer_v3 volume up|down|<0-100>`")
 

@@ -44,6 +44,7 @@ class SoundPlayer:
         if path is None:
             return False
         with self._lock:
+            pygame.mixer.stop()
             sound = pygame.mixer.Sound(path)
             sound.set_volume(self._current_volume)
             sound.play()

@@ -57,20 +57,41 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener) ->
         elif action == "voice":
             _cmd_voice(say, tts, arg)
         elif action == "panel":
-            _cmd_panel(say, player)
+            _cmd_panel(say, player, command["channel_id"])
         elif action == "stop":
             player.stop()
             say(":black_square_for_stop: Lecture arrêtée.")
+            _refresh_stored_panel(slack_client, player)
         elif action == "mute":
             player.mute()
             say(":mute: Son coupé.")
+            _refresh_stored_panel(slack_client, player)
         elif action == "unmute":
             vol = player.unmute()
             say(f":loud_sound: Son rétabli à {int(vol * 100)} %.")
+            _refresh_stored_panel(slack_client, player)
         elif action in ("volume", "vol"):
             _cmd_volume(say, player, arg)
+            _refresh_stored_panel(slack_client, player)
         else:
             say(f":x: Commande inconnue : `{action}`\n\n{_usage()}")
+
+    def on_midi_volume(action: str, vol: float):
+        info = player.get_panel_info()
+        if not info:
+            return
+        icon = ":loud_sound:" if action == "volume+" else ":sound:"
+
+        def _notify():
+            _refresh_stored_panel(slack_client, player)
+            slack_client.chat_postMessage(
+                channel=info["channel"],
+                text=f"{icon} Volume : {int(vol * 100)} %",
+            )
+
+        threading.Thread(target=_notify, daemon=True).start()
+
+    midi.set_volume_action_callback(on_midi_volume)
 
     @app.action("boomer_stop")
     def handle_action_stop(ack, body, client):
@@ -208,8 +229,25 @@ def _panel_blocks(player: SoundPlayer) -> list:
     ]
 
 
-def _cmd_panel(say, player: SoundPlayer):
-    say(blocks=_panel_blocks(player), text="Boomer Control Panel")
+def _cmd_panel(say, player: SoundPlayer, channel: str):
+    result = say(blocks=_panel_blocks(player), text="Boomer Control Panel")
+    if result and result.get("ts"):
+        player.set_panel_info(channel, result["ts"])
+
+
+def _refresh_stored_panel(client: WebClient, player: SoundPlayer):
+    info = player.get_panel_info()
+    if not info:
+        return
+    try:
+        client.chat_update(
+            channel=info["channel"],
+            ts=info["ts"],
+            blocks=_panel_blocks(player),
+            text="Boomer Control Panel",
+        )
+    except Exception:
+        player.clear_panel_info()
 
 
 def _refresh_panel(body: dict, client: WebClient, player: SoundPlayer):

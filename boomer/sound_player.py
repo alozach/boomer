@@ -117,6 +117,17 @@ class SoundPlayer:
     def is_muted(self) -> bool:
         return self._muted
 
+    def get_panel_info(self) -> dict | None:
+        return self._config.get("panel")
+
+    def set_panel_info(self, channel: str, ts: str):
+        self._config["panel"] = {"channel": channel, "ts": ts}
+        self._save_config()
+
+    def clear_panel_info(self):
+        self._config.pop("panel", None)
+        self._save_config()
+
     def get_volume(self) -> float:
         return self._current_volume
 

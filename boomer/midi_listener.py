@@ -12,12 +12,16 @@ class MidiListener:
         self._running = False
         # When set, receives every note_on and returns True to intercept it (skip normal playback)
         self._note_interceptor: Callable[[int], bool] | None = None
+        self._volume_action_callback: Callable[[str, float], None] | None = None
 
     def set_note_interceptor(self, callback: Callable[[int], bool]):
         self._note_interceptor = callback
 
     def clear_note_interceptor(self):
         self._note_interceptor = None
+
+    def set_volume_action_callback(self, callback: Callable[[str, float], None]):
+        self._volume_action_callback = callback
 
     def has_interceptor(self) -> bool:
         return self._note_interceptor is not None
@@ -53,9 +57,13 @@ class MidiListener:
             return
         if name in MIDI_ACTIONS:
             if name == "volume+":
-                self.player.volume_up()
+                vol = self.player.volume_up()
             elif name == "volume-":
-                self.player.volume_down()
+                vol = self.player.volume_down()
+            else:
+                return
+            if self._volume_action_callback:
+                self._volume_action_callback(name, vol)
             return
         played = self.player.play(name)
         if not played:

@@ -1,7 +1,7 @@
 import logging
 from collections.abc import Callable
 import mido
-from boomer.sound_player import SoundPlayer
+from boomer.sound_player import SoundPlayer, MIDI_ACTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,12 @@ class MidiListener:
         mappings = self.player.get_midi_mapping()
         name = mappings.get(note)
         if name is None:
+            return
+        if name in MIDI_ACTIONS:
+            if name == "volume+":
+                self.player.volume_up()
+            elif name == "volume-":
+                self.player.volume_down()
             return
         played = self.player.play(name)
         if not played:

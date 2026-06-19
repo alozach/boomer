@@ -7,6 +7,7 @@ import pygame
 
 SUPPORTED_EXTENSIONS = {".wav", ".mp3", ".ogg", ".flac", ".aiff"}
 MAX_VOLUME = 1.0
+MIDI_ACTIONS = {"volume+", "volume-"}
 
 
 class SoundPlayer:
@@ -52,9 +53,10 @@ class SoundPlayer:
 
     def play_file(self, path: str):
         with self._lock:
+            pygame.mixer.stop()
             sound = pygame.mixer.Sound(path)
+            sound.set_volume(self._current_volume)
             sound.play()
-            # block until playback finishes; needed for temporary TTS files
             while pygame.mixer.get_busy():
                 pygame.time.wait(50)
 
@@ -114,12 +116,12 @@ class SoundPlayer:
         # pygame.mixer.Sound.set_volume is per-instance; store level to apply on future playback calls
         self._current_volume = max(0.0, min(MAX_VOLUME, level))
 
-    def volume_up(self, step: float = 0.1) -> float:
+    def volume_up(self, step: float = 0.02) -> float:
         new_vol = min(MAX_VOLUME, self._current_volume + step)
         self.set_volume(new_vol)
         return new_vol
 
-    def volume_down(self, step: float = 0.1) -> float:
+    def volume_down(self, step: float = 0.02) -> float:
         new_vol = max(0.0, self._current_volume - step)
         self.set_volume(new_vol)
         return new_vol

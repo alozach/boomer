@@ -5,7 +5,7 @@ import threading
 import requests
 from slack_bolt import App
 from slack_sdk import WebClient
-from boomer.sound_player import SoundPlayer
+from boomer.sound_player import SoundPlayer, MIDI_ACTIONS
 from boomer.tts_engine import TtsEngine
 from boomer.midi_listener import MidiListener
 
@@ -210,7 +210,7 @@ def _cmd_map(say, client: WebClient, player: SoundPlayer, midi: MidiListener, ch
     if not name:
         say("Usage : `/boomer_v3 map <nom>`")
         return
-    if not player.sound_exists(name):
+    if name not in MIDI_ACTIONS and not player.sound_exists(name):
         say(f":x: Son `{name}` introuvable. Utilise `/boomer_v3 list` pour voir les sons disponibles.")
         return
     if midi.has_interceptor():
@@ -411,6 +411,8 @@ def _usage() -> str:
         "• `/boomer_v3 add <nom>` — ajouter un son (puis envoyer le fichier)\n"
         "• `/boomer_v3 rename <ancien> <nouveau>` — renommer un son\n"
         "• `/boomer_v3 map <nom>` — assigner un son à une touche MIDI (interactif)\n"
+        "• `/boomer_v3 map volume+` — assigner une touche MIDI au volume +\n"
+        "• `/boomer_v3 map volume-` — assigner une touche MIDI au volume −\n"
         "• `/boomer_v3 list` — lister les sons disponibles\n"
         "• `/boomer_v3 tts <texte>` — synthèse vocale\n"
         "• `/boomer_v3 voice list` — lister les voix TTS disponibles\n"

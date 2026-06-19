@@ -8,11 +8,15 @@ from boomer.sound_player import SoundPlayer
 logger = logging.getLogger(__name__)
 
 
+DEFAULT_RATE = 160
+
+
 class TtsEngine:
     def __init__(self, player: SoundPlayer):
         self.player = player
         self._lock = threading.Lock()
         self._current_voice: str | None = None
+        self._rate: int = DEFAULT_RATE
 
     def list_voices(self) -> list[dict]:
         engine = pyttsx3.init()
@@ -36,11 +40,19 @@ class TtsEngine:
     def get_current_voice(self) -> str | None:
         return self._current_voice
 
+    def get_rate(self) -> int:
+        return self._rate
+
+    def set_rate(self, rate: int) -> int:
+        self._rate = max(50, min(400, rate))
+        return self._rate
+
     def speak(self, text: str):
         with self._lock:
             tmp_path = None
             try:
                 engine = pyttsx3.init()
+                engine.setProperty("rate", self._rate)
                 if self._current_voice:
                     engine.setProperty("voice", self._current_voice)
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:

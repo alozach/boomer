@@ -391,7 +391,14 @@ def _cmd_voice(say, tts: TtsEngine, arg: str):
         for v in voices:
             marker = " ◀ active" if v["id"] == current else ""
             lines.append(f"• `{v['id']}` — {v['name']}{marker}")
-        say(f":microphone: Voix disponibles :\n" + "\n".join(lines))
+        say(":microphone: Voix disponibles :\n" + "\n".join(lines))
+    elif arg.startswith("rate ") or arg.startswith("vitesse "):
+        val = arg.split(maxsplit=1)[1]
+        if val.lstrip("-").isdigit():
+            rate = tts.set_rate(int(val))
+            say(f":speech_balloon: Vitesse TTS : {rate} mots/min.")
+        else:
+            say(f":x: Valeur invalide. Utilise `/boomer_v3 voice rate <50-400>`.")
     elif arg:
         voice_id = tts.set_voice(arg)
         if voice_id:
@@ -399,7 +406,7 @@ def _cmd_voice(say, tts: TtsEngine, arg: str):
         else:
             say(f":x: Voix `{arg}` introuvable. Utilise `/boomer_v3 voice list` pour voir les voix disponibles.")
     else:
-        say("Usage : `/boomer_v3 voice list` ou `/boomer_v3 voice <identifiant>`")
+        say("Usage : `/boomer_v3 voice list` | `/boomer_v3 voice <id>` | `/boomer_v3 voice rate <50-400>`")
 
 
 def _cmd_volume(say, player: SoundPlayer, arg: str):
@@ -472,6 +479,7 @@ def _usage() -> str:
         "• `/boomer_v3 tts <texte>` — synthèse vocale\n"
         "• `/boomer_v3 voice list` — lister les voix TTS disponibles\n"
         "• `/boomer_v3 voice <id>` — changer la voix TTS\n"
+        "• `/boomer_v3 voice rate <50-400>` — régler la vitesse TTS (défaut : 130)\n"
         "• `/boomer_v3 mute` — couper le son\n"
         "• `/boomer_v3 unmute` — rétablir le son\n"
         "• `/boomer_v3 volume up|down|<0-100>` — régler le volume\n"

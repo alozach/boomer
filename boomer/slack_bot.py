@@ -38,7 +38,7 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener) ->
         text = command.get("text", "").strip()
         parts = text.split(maxsplit=1)
         action = parts[0].lower() if parts else ""
-        arg = parts[1].strip() if len(parts) > 1 else ""
+        arg = parts[1].strip().strip("`") if len(parts) > 1 else ""
 
         if action in ("help", "aide", ""):
             say(_usage())

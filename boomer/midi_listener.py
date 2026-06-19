@@ -1,4 +1,5 @@
 import logging
+import time
 from collections.abc import Callable
 import mido
 from boomer.sound_player import SoundPlayer, MIDI_ACTIONS
@@ -38,9 +39,11 @@ class MidiListener:
         logger.info("Opening MIDI port: %s", port_name)
 
         with mido.open_input(port_name) as port:
-            for msg in port:
-                if not self._running:
-                    break
+            while self._running:
+                msg = port.receive(block=False)
+                if msg is None:
+                    time.sleep(0.005)
+                    continue
                 if msg.type == "note_on" and msg.velocity > 0:
                     self._handle_note(msg.note)
 

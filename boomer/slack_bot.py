@@ -56,6 +56,8 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener) ->
             _cmd_tts(say, tts, arg)
         elif action == "voice":
             _cmd_voice(say, tts, arg)
+        elif action == "panel":
+            _cmd_panel(say, player)
         elif action == "stop":
             player.stop()
             say(":black_square_for_stop: Lecture arrêtée.")
@@ -69,6 +71,33 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener) ->
             _cmd_volume(say, player, arg)
         else:
             say(f":x: Commande inconnue : `{action}`\n\n{_usage()}")
+
+    @app.action("boomer_stop")
+    def handle_action_stop(ack, body, client):
+        ack()
+        player.stop()
+        _refresh_panel(body, client, player)
+
+    @app.action("boomer_mute_toggle")
+    def handle_action_mute_toggle(ack, body, client):
+        ack()
+        if player.is_muted():
+            player.unmute()
+        else:
+            player.mute()
+        _refresh_panel(body, client, player)
+
+    @app.action("boomer_vol_down")
+    def handle_action_vol_down(ack, body, client):
+        ack()
+        player.volume_down()
+        _refresh_panel(body, client, player)
+
+    @app.action("boomer_vol_up")
+    def handle_action_vol_up(ack, body, client):
+        ack()
+        player.volume_up()
+        _refresh_panel(body, client, player)
 
     @app.event("message")
     def handle_message(event, client, say):
@@ -128,6 +157,53 @@ def _cmd_rename(say, player: SoundPlayer, arg: str):
         say(f":pencil2: Son `{old_name}` renommé en `{new_name}`.")
     else:
         say(f":x: {reason}")
+
+
+def _panel_blocks(player: SoundPlayer) -> list:
+    vol = int(player.get_volume() * 100)
+    muted = player.is_muted()
+    status = f":mute: Muté | Volume : {vol}%" if muted else f":loud_sound: Volume : {vol}%"
+    return [
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f":boomer: *Boomer* — {status}"},
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "⏹ Stop"},
+                    "action_id": "boomer_stop",
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "🔇 Mute" if not muted else "🔊 Unmute"},
+                    "action_id": "boomer_mute_toggle",
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "🔉 Vol −"},
+                    "action_id": "boomer_vol_down",
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "🔊 Vol +"},
+                    "action_id": "boomer_vol_up",
+                },
+            ],
+        },
+    ]
+
+
+def _cmd_panel(say, player: SoundPlayer):
+    say(blocks=_panel_blocks(player), text="Boomer Control Panel")
+
+
+def _refresh_panel(body: dict, client: WebClient, player: SoundPlayer):
+    channel = body["channel"]["id"]
+    ts = body["message"]["ts"]
+    client.chat_update(channel=channel, ts=ts, blocks=_panel_blocks(player), text="Boomer Control Panel")
 
 
 def _cmd_map(say, client: WebClient, player: SoundPlayer, midi: MidiListener, channel: str, user: str, name: str):
@@ -330,6 +406,7 @@ def _usage() -> str:
     return (
         "*Commandes disponibles :*\n"
         "• `/boomer_v3 play <nom>` — jouer un son\n"
+        "• `/boomer_v3 panel` — afficher le panneau de contrôle interactif\n"
         "• `/boomer_v3 stop` — arrêter la lecture en cours\n"
         "• `/boomer_v3 add <nom>` — ajouter un son (puis envoyer le fichier)\n"
         "• `/boomer_v3 rename <ancien> <nouveau>` — renommer un son\n"

@@ -103,6 +103,9 @@ class SoundPlayer:
         self._save_config()
         return True, ""
 
+    def is_muted(self) -> bool:
+        return self._muted
+
     def get_volume(self) -> float:
         return self._current_volume
 

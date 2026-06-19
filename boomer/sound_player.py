@@ -1,3 +1,4 @@
+import difflib
 import json
 import os
 import shutil
@@ -70,6 +71,13 @@ class SoundPlayer:
 
     def sound_exists(self, name: str) -> bool:
         return self._find_sound_file(name) is not None
+
+    def find_closest_sound(self, name: str, cutoff: float = 0.6) -> str | None:
+        candidates = self.list_sounds()
+        matches = difflib.get_close_matches(name.lower(), [s.lower() for s in candidates], n=1, cutoff=cutoff)
+        if not matches:
+            return None
+        return candidates[[s.lower() for s in candidates].index(matches[0])]
 
     def add_sound(self, name: str, source_path: str, overwrite: bool = False) -> bool:
         """Copy an audio file into the sounds directory. Returns False if the sound already exists and overwrite=False."""

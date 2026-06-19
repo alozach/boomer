@@ -124,6 +124,10 @@ def _cmd_play(say, player: SoundPlayer, name: str):
         return
     if player.play(name):
         say(f":arrow_forward: Lecture de `{name}`.")
+        return
+    closest = player.find_closest_sound(name)
+    if closest and player.play(closest):
+        say(f":arrow_forward: Lecture de `{closest}` _(plus proche de `{name}`)_.")
     else:
         say(f":x: Son `{name}` introuvable. Utilise `/boomer_v3 list` pour voir les sons disponibles.")
 
@@ -152,6 +156,14 @@ def _cmd_rename(say, player: SoundPlayer, arg: str):
         say("Usage : `/boomer_v3 rename <ancien-nom> <nouveau-nom>`")
         return
     old_name, new_name = parts
+    if not player.sound_exists(old_name):
+        closest = player.find_closest_sound(old_name)
+        if closest:
+            old_name = closest
+            say(f":mag: Son le plus proche trouvé : `{old_name}`.")
+        else:
+            say(f":x: Son `{old_name}` introuvable.")
+            return
     ok, reason = player.rename_sound(old_name, new_name)
     if ok:
         say(f":pencil2: Son `{old_name}` renommé en `{new_name}`.")
@@ -211,8 +223,13 @@ def _cmd_map(say, client: WebClient, player: SoundPlayer, midi: MidiListener, ch
         say("Usage : `/boomer_v3 map <nom>`")
         return
     if name not in MIDI_ACTIONS and not player.sound_exists(name):
-        say(f":x: Son `{name}` introuvable. Utilise `/boomer_v3 list` pour voir les sons disponibles.")
-        return
+        closest = player.find_closest_sound(name)
+        if closest:
+            name = closest
+            say(f":mag: Son le plus proche trouvé : `{name}`.")
+        else:
+            say(f":x: Son `{name}` introuvable. Utilise `/boomer_v3 list` pour voir les sons disponibles.")
+            return
     if midi.has_interceptor():
         say(":hourglass: Une assignation est déjà en cours. Attends qu'elle se termine (60 s max).")
         return

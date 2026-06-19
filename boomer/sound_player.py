@@ -1,5 +1,7 @@
+import array as arr
 import difflib
 import json
+import math
 import os
 import shutil
 import threading
@@ -165,6 +167,19 @@ class SoundPlayer:
         self._muted = False
         self._current_volume = self._volume_before_mute
         return self._current_volume
+
+    def beep(self, frequency: int = 800, duration: float = 0.08):
+        sample_rate, _, channels = pygame.mixer.get_init()
+        n = int(sample_rate * duration)
+        buf = arr.array("h", [0] * (n * channels))
+        amplitude = 3000
+        for i in range(n):
+            val = int(amplitude * math.sin(2 * math.pi * frequency * i / sample_rate))
+            for c in range(channels):
+                buf[i * channels + c] = val
+        sound = pygame.mixer.Sound(buffer=buf)
+        sound.set_volume(self._current_volume)
+        sound.play()
 
     def stop(self):
         pygame.mixer.stop()

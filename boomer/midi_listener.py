@@ -61,8 +61,10 @@ class MidiListener:
         if name in MIDI_ACTIONS:
             if name == "volume+":
                 vol = self.player.volume_up()
+                self.player.beep(frequency=900, duration=0.07)
             elif name == "volume-":
                 vol = self.player.volume_down()
+                self.player.beep(frequency=500, duration=0.07)
             else:
                 return
             if self._volume_action_callback:

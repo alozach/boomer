@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import tempfile
 import threading
 import requests
@@ -50,6 +51,10 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener) ->
             _cmd_rename(say, player, arg)
         elif action == "list":
             _cmd_list(say, player)
+        elif action in ("sounds", "sons"):
+            _cmd_sounds_panel(say, player, command["channel_id"])
+        elif action in ("delete", "supprimer", "remove"):
+            _cmd_delete(say, player, arg)
         elif action == "map":
             _cmd_map(say, slack_client, player, midi, command["channel_id"], command["user_id"], arg)
         elif action == "tts":
@@ -92,6 +97,23 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener) ->
         threading.Thread(target=_notify, daemon=True).start()
 
     midi.set_volume_action_callback(on_midi_volume)
+
+    @app.action(re.compile(r"^boomer_play_\d+$"))
+    def handle_play_button(ack, body, client):
+        ack()
+        sound_name = body["actions"][0]["value"]
+        player.play(sound_name)
+        info = player.get_panel_info("sounds_panel")
+        if info:
+            try:
+                client.chat_update(
+                    channel=info["channel"],
+                    ts=info["ts"],
+                    blocks=_sounds_panel_blocks(player, last_played=sound_name),
+                    text="Sons disponibles",
+                )
+            except Exception:
+                player.clear_panel_info("sounds_panel")
 
     @app.action("boomer_stop")
     def handle_action_stop(ack, body, client):
@@ -370,6 +392,50 @@ def _cmd_list(say, player: SoundPlayer):
     say(f":musical_note: Sons disponibles :\n{lines}")
 
 
+def _sounds_panel_blocks(player: SoundPlayer, last_played: str | None = None) -> list:
+    sounds = player.list_sounds()
+    header = ":musical_note: *Sons disponibles*"
+    if last_played:
+        header += f"  |  :arrow_forward: `{last_played}`"
+    blocks: list = [{"type": "section", "text": {"type": "mrkdwn", "text": header}}]
+    for i in range(0, len(sounds), 5):
+        blocks.append({
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": name},
+                    "value": name,
+                    "action_id": f"boomer_play_{i + j}",
+                }
+                for j, name in enumerate(sounds[i:i + 5])
+            ],
+        })
+    return blocks
+
+
+def _cmd_sounds_panel(say, player: SoundPlayer, channel: str):
+    result = say(blocks=_sounds_panel_blocks(player), text="Sons disponibles")
+    if result and result.get("ts"):
+        player.set_panel_info(channel, result["ts"], key="sounds_panel")
+
+
+def _cmd_delete(say, player: SoundPlayer, name: str):
+    if not name:
+        say("Usage : `/boomer_v3 delete <nom>`")
+        return
+    if not player.sound_exists(name):
+        closest = player.find_closest_sound(name)
+        if closest:
+            name = closest
+            say(f":mag: Son le plus proche trouvé : `{name}`.")
+        else:
+            say(f":x: Son `{name}` introuvable.")
+            return
+    player.delete_sound(name)
+    say(f":wastebasket: Son `{name}` supprimé.")
+
+
 def _cmd_tts(say, tts: TtsEngine, text: str):
     if not text:
         say("Usage : `/boomer_v3 tts <texte>`")
@@ -476,6 +542,8 @@ def _usage() -> str:
         "• `/boomer_v3 map volume+` — assigner une touche MIDI au volume +\n"
         "• `/boomer_v3 map volume-` — assigner une touche MIDI au volume −\n"
         "• `/boomer_v3 list` — lister les sons disponibles\n"
+        "• `/boomer_v3 sounds` — panneau interactif avec un bouton par son\n"
+        "• `/boomer_v3 delete <nom>` — supprimer un son\n"
         "• `/boomer_v3 tts <texte>` — synthèse vocale\n"
         "• `/boomer_v3 voice list` — lister les voix TTS disponibles\n"
         "• `/boomer_v3 voice <id>` — changer la voix TTS\n"

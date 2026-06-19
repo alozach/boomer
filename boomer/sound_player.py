@@ -92,6 +92,17 @@ class SoundPlayer:
         shutil.copy2(source_path, dest)
         return True
 
+    def delete_sound(self, name: str) -> bool:
+        path = self._find_sound_file(name)
+        if path is None:
+            return False
+        os.remove(path)
+        mappings = self._config.get("midi_mappings", {})
+        for note in [k for k, v in mappings.items() if v == name]:
+            del mappings[note]
+        self._save_config()
+        return True
+
     def get_midi_mapping(self) -> dict[int, str]:
         return {int(k): v for k, v in self._config.get("midi_mappings", {}).items()}
 
@@ -117,15 +128,15 @@ class SoundPlayer:
     def is_muted(self) -> bool:
         return self._muted
 
-    def get_panel_info(self) -> dict | None:
-        return self._config.get("panel")
+    def get_panel_info(self, key: str = "panel") -> dict | None:
+        return self._config.get(key)
 
-    def set_panel_info(self, channel: str, ts: str):
-        self._config["panel"] = {"channel": channel, "ts": ts}
+    def set_panel_info(self, channel: str, ts: str, key: str = "panel"):
+        self._config[key] = {"channel": channel, "ts": ts}
         self._save_config()
 
-    def clear_panel_info(self):
-        self._config.pop("panel", None)
+    def clear_panel_info(self, key: str = "panel"):
+        self._config.pop(key, None)
         self._save_config()
 
     def get_volume(self) -> float:

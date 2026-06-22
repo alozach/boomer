@@ -98,6 +98,19 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener) ->
 
     midi.set_volume_action_callback(on_midi_volume)
 
+    def on_midi_play(name: str):
+        info = player.get_panel_info() or player.get_panel_info("sounds_panel")
+        if not info:
+            return
+        def _notify():
+            slack_client.chat_postMessage(
+                channel=info["channel"],
+                text=f":musical_keyboard: `{name}`",
+            )
+        threading.Thread(target=_notify, daemon=True).start()
+
+    midi.set_play_callback(on_midi_play)
+
     @app.action(re.compile(r"^boomer_play_\d+$"))
     def handle_play_button(ack, body, client):
         ack()

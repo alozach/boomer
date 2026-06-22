@@ -14,12 +14,16 @@ class MidiListener:
         # When set, receives every note_on and returns True to intercept it (skip normal playback)
         self._note_interceptor: Callable[[int], bool] | None = None
         self._volume_action_callback: Callable[[str, float], None] | None = None
+        self._play_callback: Callable[[str], None] | None = None
 
     def set_note_interceptor(self, callback: Callable[[int], bool]):
         self._note_interceptor = callback
 
     def clear_note_interceptor(self):
         self._note_interceptor = None
+
+    def set_play_callback(self, callback: Callable[[str], None]):
+        self._play_callback = callback
 
     def set_volume_action_callback(self, callback: Callable[[str, float], None]):
         self._volume_action_callback = callback
@@ -71,5 +75,8 @@ class MidiListener:
                 self._volume_action_callback(name, vol)
             return
         played = self.player.play(name)
-        if not played:
+        if played:
+            if self._play_callback:
+                self._play_callback(name)
+        else:
             logger.warning("Sound '%s' mapped to note %d not found.", name, note)

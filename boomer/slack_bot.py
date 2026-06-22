@@ -536,7 +536,7 @@ def _cmd_tts(say, tts: TtsEngine, arg: str):
         say("Usage : `/boomer_v3 tts <texte> [lang]` | `tts rate <50-400>` | `tts list`")
         return
     if arg in ("list", "liste"):
-        lines = [f"• `{v['code']}` — {v['voice']}" for v in tts.list_voices()]
+        lines = [f"• `{v['code']}` — {v['label']}" for v in tts.list_voices()]
         say(":microphone: Langues disponibles :\n" + "\n".join(lines))
         return
     if arg.startswith("rate ") or arg.startswith("vitesse "):

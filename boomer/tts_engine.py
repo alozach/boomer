@@ -12,37 +12,34 @@ logger = logging.getLogger(__name__)
 DEFAULT_RATE = 160
 DEFAULT_LANG = "fr"
 
-# Maps short lang codes to edge-tts neural voice names
-LANG_MAP: dict[str, str] = {
-    "fr": "fr-FR-DeniseNeural",
-    "fr-ca": "fr-CA-SylvieNeural",
-    "fr-be": "fr-BE-CharlineNeural",
-    "en": "en-US-JennyNeural",
-    "en-gb": "en-GB-SoniaNeural",
-    "es": "es-ES-ElviraNeural",
-    "es-lat": "es-MX-DaliaNeural",
-    "de": "de-DE-KatjaNeural",
-    "it": "it-IT-ElsaNeural",
-    "pt": "pt-PT-RaquelNeural",
-    "pt-br": "pt-BR-FranciscaNeural",
-    "nl": "nl-NL-ColetteNeural",
-    "pl": "pl-PL-ZofiaNeural",
-    "ru": "ru-RU-SvetlanaNeural",
-    "uk": "uk-UA-PolinaNeural",
-    "cs": "cs-CZ-VlastaNeural",
-    "ro": "ro-RO-AlinaNeural",
-    "hu": "hu-HU-NoemiNeural",
-    "sv": "sv-SE-SofieNeural",
-    "da": "da-DK-ChristelNeural",
-    "fi": "fi-FI-NooraNeural",
-    "el": "el-GR-AthinaNeural",
-    "tr": "tr-TR-EmelNeural",
-    "ar": "ar-SA-ZariyahNeural",
-    "he": "he-IL-HilaNeural",
-    "hi": "hi-IN-SwaraNeural",
-    "zh": "zh-CN-XiaoxiaoNeural",
-    "ja": "ja-JP-NanamiNeural",
-    "ko": "ko-KR-SunHiNeural",
+# Maps short lang codes to (voice name, human-readable label)
+LANG_MAP: dict[str, tuple[str, str]] = {
+    "fr":     ("fr-FR-DeniseNeural",     "Français (France)"),
+    "fr-ca":  ("fr-CA-SylvieNeural",     "Français (Canada)"),
+    "fr-be":  ("fr-BE-CharlineNeural",   "Français (Belgique)"),
+    "en":     ("en-US-JennyNeural",      "English (US)"),
+    "en-gb":  ("en-GB-SoniaNeural",      "English (UK)"),
+    "es":     ("es-ES-ElviraNeural",     "Espagnol"),
+    "de":     ("de-DE-KatjaNeural",      "Allemand"),
+    "it":     ("it-IT-ElsaNeural",       "Italien"),
+    "pt":     ("pt-PT-RaquelNeural",     "Portugais"),
+    "nl":     ("nl-NL-ColetteNeural",    "Néerlandais"),
+    "ru":     ("ru-RU-SvetlanaNeural",   "Russe"),
+    "uk":     ("uk-UA-PolinaNeural",     "Ukrainien"),
+    "cs":     ("cs-CZ-VlastaNeural",     "Tchèque"),
+    "ro":     ("ro-RO-AlinaNeural",      "Roumain"),
+    "hu":     ("hu-HU-NoemiNeural",      "Hongrois"),
+    "sv":     ("sv-SE-SofieNeural",      "Suédois"),
+    "da":     ("da-DK-ChristelNeural",   "Danois"),
+    "fi":     ("fi-FI-NooraNeural",      "Finnois"),
+    "el":     ("el-GR-AthinaNeural",     "Grec"),
+    "tr":     ("tr-TR-EmelNeural",       "Turc"),
+    "ar":     ("ar-SA-ZariyahNeural",    "Arabe"),
+    "he":     ("he-IL-HilaNeural",       "Hébreu"),
+    "hi":     ("hi-IN-SwaraNeural",      "Hindi"),
+    "zh":     ("zh-CN-XiaoxiaoNeural",   "Chinois"),
+    "ja":     ("ja-JP-NanamiNeural",     "Japonais"),
+    "ko":     ("ko-KR-SunHiNeural",      "Coréen"),
 }
 
 
@@ -58,7 +55,8 @@ class TtsEngine:
         self._rate: int = DEFAULT_RATE
 
     def list_voices(self) -> list[dict]:
-        return [{"code": code, "voice": voice} for code, voice in LANG_MAP.items()]
+        return [{"code": code, "voice": voice, "label": label}
+                for code, (voice, label) in LANG_MAP.items()]
 
     def get_rate(self) -> int:
         return self._rate
@@ -68,7 +66,7 @@ class TtsEngine:
         return self._rate
 
     def speak(self, text: str, lang: str | None = None):
-        voice = LANG_MAP.get((lang or DEFAULT_LANG).lower(), LANG_MAP[DEFAULT_LANG])
+        voice, _ = LANG_MAP.get((lang or DEFAULT_LANG).lower(), LANG_MAP[DEFAULT_LANG])
         rate_str = _rate_to_pct(self._rate)
         with self._lock:
             tmp_path = None

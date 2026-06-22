@@ -1,3 +1,17 @@
 {
-  "midi_mappings": {}
+  "midi_mappings": {
+    "48": "JO",
+    "60": "maaaarc",
+    "47": "volume+",
+    "58": "volume+",
+    "56": "volume-"
+  },
+  "panel": {
+    "channel": "C060TP02J4V",
+    "ts": "1781883724.707279"
+  },
+  "sounds_panel": {
+    "channel": "C060TP02J4V",
+    "ts": "1781884704.135239"
+  }
 }

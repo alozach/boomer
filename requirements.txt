@@ -4,5 +4,5 @@ pygame>=2.5.0
 slack-bolt>=1.18.0
 slack-sdk>=3.27.0
 python-dotenv>=1.0.0
-pyttsx3>=2.90
+edge-tts>=6.1.0
 requests>=2.31.0

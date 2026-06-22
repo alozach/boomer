@@ -40,6 +40,7 @@ def main():
             midi.stop()
             scheduler.stop()
             handler.close()
+            os._exit(0)
 
         signal.signal(signal.SIGINT, shutdown)
         signal.signal(signal.SIGTERM, shutdown)

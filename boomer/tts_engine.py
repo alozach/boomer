@@ -9,36 +9,85 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_RATE = 160
+DEFAULT_LANG = "fr"
+
+LANG_MAP: dict[str, str] = {
+    # French variants
+    "fr": "fr-fr",
+    "fr-be": "fr-be",
+    "fr-ch": "fr-ch",
+    # English variants
+    "en": "en-us",
+    "en-gb": "en-gb",
+    "en-us": "en-us",
+    # Major European languages
+    "es": "es",
+    "es-lat": "es-419",
+    "de": "de",
+    "it": "it",
+    "pt": "pt",
+    "pt-br": "pt-br",
+    "nl": "nl",
+    "pl": "pl",
+    "ru": "ru",
+    "uk": "uk",
+    "cs": "cs",
+    "ro": "ro",
+    "hu": "hu",
+    "sv": "sv",
+    "da": "da",
+    "fi": "fi",
+    "el": "el",
+    "tr": "tr",
+    # Other
+    "ar": "ar",
+    "he": "he",
+    "hi": "hi",
+    "zh": "cmn",
+    "ja": "ja",
+    "ko": "ko",
+}
+
+
+def _decode(val) -> str:
+    return val.decode() if isinstance(val, bytes) else str(val)
 
 
 class TtsEngine:
     def __init__(self, player: SoundPlayer):
         self.player = player
         self._lock = threading.Lock()
-        self._current_voice: str | None = None
         self._rate: int = DEFAULT_RATE
+
+    def _resolve_voice(self, lang: str) -> str | None:
+        code = LANG_MAP.get(lang.lower(), lang.lower())
+        engine = pyttsx3.init()
+        voices = engine.getProperty("voices") or []
+        engine.stop()
+        for v in voices:
+            langs = [_decode(l) for l in (v.languages or [])]
+            if code in _decode(v.id).lower() or any(code in l.lower() for l in langs):
+                return v.id
+        return None
 
     def list_voices(self) -> list[dict]:
         engine = pyttsx3.init()
         voices = engine.getProperty("voices") or []
-        result = [{"id": v.id, "name": v.name or v.id} for v in voices]
         engine.stop()
+        result = []
+        for code, espeak_code in LANG_MAP.items():
+            matched = next(
+                (v for v in voices
+                 if espeak_code in _decode(v.id).lower()
+                 or any(espeak_code in _decode(l).lower() for l in (v.languages or []))),
+                None,
+            )
+            result.append({
+                "code": code,
+                "lang": espeak_code,
+                "id": matched.id if matched else None,
+            })
         return result
-
-    def set_voice(self, identifier: str) -> str | None:
-        """Find a voice by partial ID or name match. Returns the voice ID if found, None otherwise."""
-        engine = pyttsx3.init()
-        voices = engine.getProperty("voices") or []
-        engine.stop()
-        identifier_lower = identifier.lower()
-        for v in voices:
-            if identifier_lower in v.id.lower() or identifier_lower in (v.name or "").lower():
-                self._current_voice = v.id
-                return v.id
-        return None
-
-    def get_current_voice(self) -> str | None:
-        return self._current_voice
 
     def get_rate(self) -> int:
         return self._rate
@@ -47,14 +96,15 @@ class TtsEngine:
         self._rate = max(50, min(400, rate))
         return self._rate
 
-    def speak(self, text: str):
+    def speak(self, text: str, lang: str | None = None):
+        voice_id = self._resolve_voice(lang or DEFAULT_LANG)
         with self._lock:
             tmp_path = None
             try:
                 engine = pyttsx3.init()
                 engine.setProperty("rate", self._rate)
-                if self._current_voice:
-                    engine.setProperty("voice", self._current_voice)
+                if voice_id:
+                    engine.setProperty("voice", voice_id)
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                     tmp_path = f.name
                 engine.save_to_file(text, tmp_path)

@@ -7,7 +7,7 @@ import requests
 from slack_bolt import App
 from slack_sdk import WebClient
 from boomer.sound_player import SoundPlayer, MIDI_ACTIONS
-from boomer.tts_engine import TtsEngine
+from boomer.tts_engine import TtsEngine, LANG_MAP
 from boomer.midi_listener import MidiListener
 from boomer.scheduler import Scheduler, parse_days, days_label
 
@@ -61,8 +61,6 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
             _cmd_map(say, slack_client, player, midi, command["channel_id"], command["user_id"], arg)
         elif action == "tts":
             _cmd_tts(say, tts, arg)
-        elif action == "voice":
-            _cmd_voice(say, tts, arg)
         elif action == "panel":
             _cmd_panel(say, player, command["channel_id"])
         elif action == "stop":
@@ -533,43 +531,36 @@ def _cmd_schedule(say, scheduler: Scheduler, player: SoundPlayer, arg: str):
     say(f":white_check_mark: Planifié `{sound}` à {time_str} ({label}). ID : `{sid}`")
 
 
-def _cmd_tts(say, tts: TtsEngine, text: str):
-    if not text:
-        say("Usage : `/boomer_v3 tts <texte>`")
+def _cmd_tts(say, tts: TtsEngine, arg: str):
+    if not arg:
+        say("Usage : `/boomer_v3 tts <texte> [lang]` | `tts rate <50-400>` | `tts list`")
         return
-    voice = tts.get_current_voice()
-    voice_hint = f" _(voix : `{voice}`)_" if voice else ""
-    say(f":speaking_head_in_silhouette: *{text}*{voice_hint}")
-    threading.Thread(target=tts.speak, args=(text,), daemon=True).start()
-
-
-def _cmd_voice(say, tts: TtsEngine, arg: str):
     if arg in ("list", "liste"):
         voices = tts.list_voices()
-        if not voices:
-            say(":x: Aucune voix disponible.")
-            return
-        current = tts.get_current_voice()
         lines = []
         for v in voices:
-            marker = " ◀ active" if v["id"] == current else ""
-            lines.append(f"• `{v['id']}` — {v['name']}{marker}")
-        say(":microphone: Voix disponibles :\n" + "\n".join(lines))
-    elif arg.startswith("rate ") or arg.startswith("vitesse "):
+            status = f"`{v['id']}`" if v["id"] else ":x: non disponible"
+            lines.append(f"• `{v['code']}` ({v['lang']}) → {status}")
+        say(":microphone: Langues disponibles :\n" + "\n".join(lines))
+        return
+    if arg.startswith("rate ") or arg.startswith("vitesse "):
         val = arg.split(maxsplit=1)[1]
         if val.lstrip("-").isdigit():
             rate = tts.set_rate(int(val))
             say(f":speech_balloon: Vitesse TTS : {rate} mots/min.")
         else:
-            say(f":x: Valeur invalide. Utilise `/boomer_v3 voice rate <50-400>`.")
-    elif arg:
-        voice_id = tts.set_voice(arg)
-        if voice_id:
-            say(f":white_check_mark: Voix changée : `{voice_id}`")
-        else:
-            say(f":x: Voix `{arg}` introuvable. Utilise `/boomer_v3 voice list` pour voir les voix disponibles.")
+            say(":x: Valeur invalide. Utilise `/boomer_v3 tts rate <50-400>`.")
+        return
+    words = arg.split()
+    lang = None
+    if len(words) >= 2 and words[-1].lower() in LANG_MAP:
+        lang = words[-1].lower()
+        text = " ".join(words[:-1])
     else:
-        say("Usage : `/boomer_v3 voice list` | `/boomer_v3 voice <id>` | `/boomer_v3 voice rate <50-400>`")
+        text = arg
+    lang_hint = f" _(lang : `{lang or 'fr'}`)_"
+    say(f":speaking_head_in_silhouette: *{text}*{lang_hint}")
+    threading.Thread(target=tts.speak, args=(text, lang), daemon=True).start()
 
 
 def _cmd_volume(say, player: SoundPlayer, arg: str):
@@ -640,10 +631,9 @@ def _usage() -> str:
         "• `/boomer_v3 delete <nom>` — supprimer un son\n"
         "• `/boomer_v3 panel` — afficher le panneau de contrôle interactif\n"
         "• `/boomer_v3 sounds` — panneau interactif avec un bouton par son\n"
-        "• `/boomer_v3 tts <texte>` — synthèse vocale\n"
-        "• `/boomer_v3 voice list` — lister les voix TTS disponibles\n"
-        "• `/boomer_v3 voice <id>` — changer la voix TTS\n"
-        "• `/boomer_v3 voice rate <50-400>` — régler la vitesse TTS (défaut : 130)\n"
+        "• `/boomer_v3 tts <texte> [lang]` — synthèse vocale (lang: fr, en, es, de… défaut: fr)\n"
+        "• `/boomer_v3 tts rate <50-400>` — régler la vitesse TTS\n"
+        "• `/boomer_v3 tts list` — lister les langues disponibles\n"
         "• `/boomer_v3 mute / unmute` — couper / rétablir le son\n"
         "• `/boomer_v3 schedule <HH:MM> [jours] <son>` — planifier un son (ex: `09:00 lun-ven matin`)\n"
         "• `/boomer_v3 schedule list / cancel <id>` — gérer les planifications\n"

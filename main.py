@@ -15,17 +15,20 @@ from boomer.sound_player import SoundPlayer
 from boomer.midi_listener import MidiListener
 from boomer.tts_engine import TtsEngine
 from boomer.slack_bot import create_slack_app
+from boomer.scheduler import Scheduler
 
 
 def main():
     player = SoundPlayer("sounds", "config.json")
     tts = TtsEngine(player)
     midi = MidiListener(player)
+    scheduler = Scheduler(player)
 
     midi_thread = threading.Thread(target=midi.start, daemon=True, name="midi-listener")
     midi_thread.start()
+    scheduler.start()
 
-    app = create_slack_app(player, tts, midi)
+    app = create_slack_app(player, tts, midi, scheduler)
 
     app_token = os.getenv("SLACK_APP_TOKEN")
     if app_token:
@@ -35,6 +38,7 @@ def main():
         def shutdown(sig, frame):
             logging.info("Shutting down...")
             midi.stop()
+            scheduler.stop()
             handler.close()
 
         signal.signal(signal.SIGINT, shutdown)

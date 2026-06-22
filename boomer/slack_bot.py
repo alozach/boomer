@@ -9,6 +9,7 @@ from slack_sdk import WebClient
 from boomer.sound_player import SoundPlayer, MIDI_ACTIONS
 from boomer.tts_engine import TtsEngine
 from boomer.midi_listener import MidiListener
+from boomer.scheduler import Scheduler, parse_days, days_label
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,8 @@ _pending_maps: dict[tuple[str, str], dict] = {}
 _pending_maps_lock = threading.Lock()
 
 
-def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener) -> App:
+def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
+                     scheduler: Scheduler) -> App:
     app = App(
         token=os.environ["SLACK_BOT_TOKEN"],
         signing_secret=os.environ["SLACK_SIGNING_SECRET"],
@@ -78,6 +80,8 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener) ->
         elif action in ("volume", "vol"):
             _cmd_volume(say, player, arg)
             _refresh_stored_panel(slack_client, player)
+        elif action == "schedule":
+            _cmd_schedule(say, scheduler, player, arg)
         else:
             say(f":x: Commande inconnue : `{action}`\n\n{_usage()}")
 
@@ -154,6 +158,19 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener) ->
         ack()
         player.volume_up()
         _refresh_panel(body, client, player)
+
+    def on_scheduled_fire(schedule_id: str, sound: str):
+        info = player.get_panel_info() or player.get_panel_info("sounds_panel")
+        if not info:
+            return
+        def _notify():
+            slack_client.chat_postMessage(
+                channel=info["channel"],
+                text=f":alarm_clock: Son planifié : `{sound}`",
+            )
+        threading.Thread(target=_notify, daemon=True).start()
+
+    scheduler.set_on_fire_callback(on_scheduled_fire)
 
     @app.event("message")
     def handle_message(event, client, say):
@@ -449,6 +466,73 @@ def _cmd_delete(say, player: SoundPlayer, name: str):
     say(f":wastebasket: Son `{name}` supprimé.")
 
 
+_SCHEDULE_HELP = (
+    "*`/boomer_v3 schedule` — planifier un son*\n"
+    "• `/boomer_v3 schedule <HH:MM> <son>` — tous les jours\n"
+    "• `/boomer_v3 schedule <HH:MM> lun-ven <son>` — jours de semaine\n"
+    "• `/boomer_v3 schedule <HH:MM> weekend <son>` — sam et dim\n"
+    "• `/boomer_v3 schedule <HH:MM> lun,mer,ven <son>` — jours spécifiques\n"
+    "• `/boomer_v3 schedule list` — lister les planifications actives\n"
+    "• `/boomer_v3 schedule cancel <id>` — supprimer une planification\n"
+    "_Jours supportés : lun mar mer jeu ven sam dim (ou mon tue wed thu fri sat sun)_"
+)
+
+def _cmd_schedule(say, scheduler: Scheduler, player: SoundPlayer, arg: str):
+    parts = arg.split()
+    if not parts or parts[0] in ("help", "aide"):
+        say(_SCHEDULE_HELP)
+        return
+    if parts[0] in ("list", "liste"):
+        schedules = scheduler.list_all()
+        if not schedules:
+            say(":calendar: Aucune planification active.")
+            return
+        lines = []
+        for s in schedules:
+            label = days_label(s.get("days"))
+            lines.append(f"• `{s['id']}` — {s['time']} ({label}) → `{s['sound']}`")
+        say(":calendar: Planifications :\n" + "\n".join(lines))
+        return
+    if parts[0] in ("cancel", "annuler") and len(parts) == 2:
+        if scheduler.remove(parts[1]):
+            say(f":white_check_mark: Planification `{parts[1]}` supprimée.")
+        else:
+            say(f":x: Identifiant `{parts[1]}` introuvable.")
+        return
+    # add: <heure> [jours] <son>
+    if len(parts) < 2:
+        say("Usage : `/boomer_v3 schedule <heure> [jours] <son>` | `list` | `cancel <id>`")
+        return
+    time_str = parts[0]
+    if ":" not in time_str:
+        say(f":x: Format d'heure invalide : `{time_str}` (attendu HH:MM).")
+        return
+    # detect optional day spec (contains '-', ',' or known day keyword)
+    days = None
+    sound_parts_start = 1
+    if len(parts) >= 3:
+        candidate = parts[1].lower()
+        parsed = parse_days(candidate)
+        if parsed is not None or candidate in ("tous", "all", "semaine", "weekend", "weekdays"):
+            days = parsed
+            sound_parts_start = 2
+    sound = " ".join(parts[sound_parts_start:])
+    if not player.sound_exists(sound):
+        closest = player.find_closest_sound(sound)
+        if closest:
+            sound = closest
+            say(f":mag: Son le plus proche : `{sound}`.")
+        else:
+            say(f":x: Son `{sound}` introuvable.")
+            return
+    sid = scheduler.add(time_str, sound, days)
+    if sid is None:
+        say(f":x: Heure invalide : `{time_str}`.")
+        return
+    label = days_label(days)
+    say(f":white_check_mark: Planifié `{sound}` à {time_str} ({label}). ID : `{sid}`")
+
+
 def _cmd_tts(say, tts: TtsEngine, text: str):
     if not text:
         say("Usage : `/boomer_v3 tts <texte>`")
@@ -547,22 +631,21 @@ def _usage() -> str:
     return (
         "*Commandes disponibles :*\n"
         "• `/boomer_v3 play <nom>` — jouer un son\n"
-        "• `/boomer_v3 panel` — afficher le panneau de contrôle interactif\n"
         "• `/boomer_v3 stop` — arrêter la lecture en cours\n"
+        "• `/boomer_v3 vol up|down|<0-100>` — régler le volume\n"
+        "• `/boomer_v3 list` — lister les sons disponibles\n"
         "• `/boomer_v3 add <nom>` — ajouter un son (puis envoyer le fichier)\n"
         "• `/boomer_v3 rename <ancien> <nouveau>` — renommer un son\n"
         "• `/boomer_v3 map <nom>` — assigner un son à une touche MIDI (interactif)\n"
-        "• `/boomer_v3 map volume+` — assigner une touche MIDI au volume +\n"
-        "• `/boomer_v3 map volume-` — assigner une touche MIDI au volume −\n"
-        "• `/boomer_v3 list` — lister les sons disponibles\n"
-        "• `/boomer_v3 sounds` — panneau interactif avec un bouton par son\n"
         "• `/boomer_v3 delete <nom>` — supprimer un son\n"
+        "• `/boomer_v3 panel` — afficher le panneau de contrôle interactif\n"
+        "• `/boomer_v3 sounds` — panneau interactif avec un bouton par son\n"
         "• `/boomer_v3 tts <texte>` — synthèse vocale\n"
         "• `/boomer_v3 voice list` — lister les voix TTS disponibles\n"
         "• `/boomer_v3 voice <id>` — changer la voix TTS\n"
         "• `/boomer_v3 voice rate <50-400>` — régler la vitesse TTS (défaut : 130)\n"
-        "• `/boomer_v3 mute` — couper le son\n"
-        "• `/boomer_v3 unmute` — rétablir le son\n"
-        "• `/boomer_v3 volume up|down|<0-100>` — régler le volume\n"
+        "• `/boomer_v3 mute / unmute` — couper / rétablir le son\n"
+        "• `/boomer_v3 schedule <HH:MM> [jours] <son>` — planifier un son (ex: `09:00 lun-ven matin`)\n"
+        "• `/boomer_v3 schedule list / cancel <id>` — gérer les planifications\n"
         "• `/boomer_v3 help` — afficher cette aide"
     )

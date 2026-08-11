@@ -1,12 +1,14 @@
 import array as arr
 import difflib
 import json
+import logging
 import math
 import os
 import shutil
 import threading
 import pygame
 
+logger = logging.getLogger(__name__)
 
 SUPPORTED_EXTENSIONS = {".wav", ".mp3", ".ogg", ".flac", ".aiff"}
 MAX_VOLUME = 1.0
@@ -49,19 +51,29 @@ class SoundPlayer:
             return False
         with self._lock:
             pygame.mixer.stop()
-            sound = pygame.mixer.Sound(path)
+            try:
+                sound = pygame.mixer.Sound(path)
+            except pygame.error:
+                # e.g. extension lying about the real container/codec
+                logger.exception("Cannot decode sound file: %s", path)
+                return False
             sound.set_volume(self._current_volume)
             sound.play()
         return True
 
-    def play_file(self, path: str):
+    def play_file(self, path: str) -> bool:
         with self._lock:
             pygame.mixer.stop()
-            sound = pygame.mixer.Sound(path)
+            try:
+                sound = pygame.mixer.Sound(path)
+            except pygame.error:
+                logger.exception("Cannot decode sound file: %s", path)
+                return False
             sound.set_volume(self._current_volume)
             sound.play()
             while pygame.mixer.get_busy():
                 pygame.time.wait(50)
+        return True
 
     def list_sounds(self) -> list[str]:
         names = []

@@ -117,7 +117,12 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
     def handle_play_button(ack, body, client):
         ack()
         sound_name = body["actions"][0]["value"]
-        player.play(sound_name)
+        if not player.play(sound_name):
+            client.chat_postMessage(
+                channel=body["channel"]["id"],
+                text=f":x: Le fichier `{sound_name}` n'a pas pu être décodé (format audio non reconnu).",
+            )
+            return
         info = player.get_panel_info("sounds_panel")
         if info:
             try:
@@ -195,6 +200,9 @@ def _cmd_play(say, player: SoundPlayer, name: str):
         return
     if player.play(name):
         say(f":arrow_forward: Lecture de `{name}`.")
+        return
+    if player.sound_exists(name):
+        say(f":x: Le fichier `{name}` n'a pas pu être décodé (format audio non reconnu).")
         return
     closest = player.find_closest_sound(name)
     if closest and player.play(closest):

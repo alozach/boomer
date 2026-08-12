@@ -34,6 +34,8 @@ de synthèse ou planifier des lectures automatiques.
 
 L'état persistant vit dans deux fichiers JSON à la racine : `config.json`
 (mappings MIDI + références des panneaux Slack) et `schedules.json` (planifications).
+Ces fichiers sont écrits par le bot au fil de l'eau et ne sont donc pas versionnés :
+seul le modèle `config.example.json` l'est, copié vers `config.json` à l'installation.
 
 ## Installation
 

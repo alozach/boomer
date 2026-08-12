@@ -1,0 +1,6 @@
+{
+  "midi_mappings": {
+    "58": "volume+",
+    "56": "volume-",
+  }
+}

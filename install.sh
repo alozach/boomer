@@ -44,6 +44,12 @@ if [ ! -f "$PROJECT_DIR/.env" ]; then
     echo ""
 fi
 
+# État persistant
+if [ ! -f "$PROJECT_DIR/config.json" ]; then
+    cp "$PROJECT_DIR/config.example.json" "$PROJECT_DIR/config.json"
+    echo "==> config.json créé depuis config.example.json."
+fi
+
 # Service systemd
 echo "==> Création du service systemd $SERVICE_NAME..."
 sudo tee "/etc/systemd/system/$SERVICE_NAME.service" > /dev/null <<EOF

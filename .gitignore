@@ -1,4 +1,7 @@
 .env
+config.json
+schedules.json
+stats.json
 __pycache__/
 *.py[cod]
 *.egg-info/

@@ -10,7 +10,8 @@ de synthèse ou planifier des lectures automatiques.
 
 - **Lecture de sons** — bibliothèque de fichiers audio (`.mp3`, `.wav`, `.ogg`, `.flac`, `.aiff`)
   dans [sounds/](sounds/), jouée via pygame.
-- **Effets** — `--reverse`, `--speed`, `--nightcore` et consorts déforment un son à la volée.
+- **Enchaînements et effets** — `play a+b+c` joue les sons à la suite, `--reverse`,
+  `--speed`, `--nightcore` et consorts les déforment à la volée.
 - **Clavier MIDI** — chaque touche peut être associée à un son ou à une action volume ±,
   avec un bip de retour sur les touches de volume.
 - **Bot Slack** — commande slash `/boomer_v3` + panneaux interactifs à boutons
@@ -27,7 +28,7 @@ de synthèse ou planifier des lectures automatiques.
 | Fichier | Rôle |
 | --- | --- |
 | [main.py](main.py) | Point d'entrée : instancie les composants, lance le thread MIDI et le bot Slack |
-| [boomer/sound_player.py](boomer/sound_player.py) | Bibliothèque de sons, lecture, volume/mute, mappings MIDI, persistance de `config.json` |
+| [boomer/sound_player.py](boomer/sound_player.py) | Bibliothèque de sons, lecture, enchaînements, volume/mute, mappings MIDI, persistance de `config.json` |
 | [boomer/audio_effects.py](boomer/audio_effects.py) | Parsing des flags d'effets et transformation des échantillons (numpy) |
 | [boomer/midi_listener.py](boomer/midi_listener.py) | Boucle d'écoute MIDI (mido), dispatch note → son ou action |
 | [boomer/slack_bot.py](boomer/slack_bot.py) | Commandes slash, panneaux interactifs, upload de fichiers |
@@ -79,7 +80,7 @@ Puis `make start`.
 
 | Commande | Effet |
 | --- | --- |
-| `/boomer_v3 play <nom> [effets]` | Jouer un son |
+| `/boomer_v3 play <nom>[+<nom>…] [effets]` | Jouer un son, ou plusieurs à la suite |
 | `/boomer_v3 stop` | Arrêter la lecture en cours |
 | `/boomer_v3 list` | Lister les sons disponibles |
 | `/boomer_v3 sounds` | Panneau interactif, un bouton par son |
@@ -108,6 +109,9 @@ Puis `make start`.
 | `--nightcore` / `--chipmunk` | Accéléré (×1.35 / ×1.8) |
 | `--vaporwave` / `--slow` / `--deep` | Ralenti (×0.75 / ×0.7 / ×0.6) |
 
+Sur un enchaînement, les effets s'appliquent à tous les sons :
+`/boomer_v3 play bonk+atchoum --nightcore`.
+
 ## Exploitation
 
 ```bash
@@ -124,6 +128,7 @@ make run        # lancer en avant-plan sans systemd (debug)
 
 - Le volume par défaut est bas (2 %) : les enceintes visées saturent vite. Il monte par pas de 2 %.
 - Les effets sont calculés en mémoire avec numpy : les fichiers d'origine ne sont jamais modifiés.
+- Toute nouvelle lecture (bouton, commande, touche MIDI) interrompt l'enchaînement en cours.
 - La synthèse vocale passe par les serveurs Microsoft Edge : sans réseau, `tts` échoue
   (l'erreur est loguée, le reste continue de fonctionner).
 - Sans clavier MIDI branché au démarrage, l'écoute MIDI est simplement désactivée

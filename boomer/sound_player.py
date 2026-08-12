@@ -6,6 +6,7 @@ import math
 import os
 import shutil
 import threading
+import time
 import pygame
 
 from boomer import audio_effects
@@ -29,6 +30,8 @@ class SoundPlayer:
         self._current_volume: float = 0.02
         self._muted: bool = False
         self._volume_before_mute: float = 0.02
+        # Bumped on every new playback so a running sequence knows it has been superseded
+        self._playback_token: int = 0
 
     def _load_config(self) -> dict:
         if not os.path.exists(self.config_path):
@@ -46,6 +49,12 @@ class SoundPlayer:
             if os.path.exists(path):
                 return path
         return None
+
+    def _start_playback(self) -> int:
+        """Cancel whatever is playing and claim a new playback token. Caller holds the lock."""
+        self._playback_token += 1
+        pygame.mixer.stop()
+        return self._playback_token
 
     def _play_path(self, path: str, effects: dict | None):
         """Load, transform and start a file. Returns (channel, sound) or None. Caller holds the lock."""
@@ -66,12 +75,40 @@ class SoundPlayer:
         if path is None:
             return False
         with self._lock:
-            pygame.mixer.stop()
+            self._start_playback()
             return self._play_path(path, effects) is not None
+
+    def play_sequence(self, names: list[str], effects: dict | None = None) -> bool:
+        """Play sounds back to back in a background thread. Any new playback interrupts it."""
+        paths = [p for p in (self._find_sound_file(n) for n in names) if p is not None]
+        if not paths:
+            return False
+        with self._lock:
+            token = self._start_playback()
+        thread = threading.Thread(
+            target=self._run_sequence, args=(paths, effects, token), daemon=True, name="sequence"
+        )
+        thread.start()
+        return True
+
+    def _run_sequence(self, paths: list[str], effects: dict | None, token: int):
+        for path in paths:
+            with self._lock:
+                if token != self._playback_token:
+                    return
+                started = self._play_path(path, effects)
+            if started is None:
+                continue
+            channel, sound = started
+            deadline = time.monotonic() + sound.get_length()
+            while time.monotonic() < deadline and channel.get_busy():
+                if token != self._playback_token:
+                    return
+                time.sleep(0.02)
 
     def play_file(self, path: str) -> bool:
         with self._lock:
-            pygame.mixer.stop()
+            self._start_playback()
             if self._play_path(path, None) is None:
                 return False
             while pygame.mixer.get_busy():
@@ -197,4 +234,5 @@ class SoundPlayer:
         sound.play()
 
     def stop(self):
-        pygame.mixer.stop()
+        with self._lock:
+            self._start_playback()

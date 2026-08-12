@@ -201,28 +201,49 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
     return app
 
 
+def _resolve_names(say, player: SoundPlayer, raw: str) -> list[str] | None:
+    """Turn `a+b+c` into existing sound names, fuzzy-matching each one. None if any is missing."""
+    resolved = []
+    for part in (p.strip() for p in raw.split("+")):
+        if not part:
+            continue
+        if player.sound_exists(part):
+            resolved.append(part)
+            continue
+        closest = player.find_closest_sound(part)
+        if closest is None:
+            say(f":x: Son `{part}` introuvable. Utilise `/boomer_v3 list` pour voir les sons disponibles.")
+            return None
+        say(f":mag: Son le plus proche de `{part}` : `{closest}`.")
+        resolved.append(closest)
+    return resolved or None
+
+
 def _cmd_play(say, player: SoundPlayer, arg: str):
     if not arg:
-        say(f"Usage : `/boomer_v3 play <nom> [effets]`\n_{_EFFECTS_HELP}_")
+        say(f"Usage : `/boomer_v3 play <nom>[+<nom>…] [effets]`\n_{_EFFECTS_HELP}_")
         return
     try:
-        name, effects = audio_effects.parse_effects(arg)
+        names_part, effects = audio_effects.parse_effects(arg)
     except EffectError as e:
         say(f":x: {e}\n_{_EFFECTS_HELP}_")
         return
 
+    names = _resolve_names(say, player, names_part)
+    if not names:
+        return
+
     suffix = audio_effects.describe(effects)
-    if player.play(name, effects):
-        say(f":arrow_forward: Lecture de `{name}`{suffix}.")
+    if len(names) == 1:
+        if not player.play(names[0], effects):
+            say(f":x: Le fichier `{names[0]}` n'a pas pu être décodé (format audio non reconnu).")
+            return
+        say(f":arrow_forward: Lecture de `{names[0]}`{suffix}.")
         return
-    if player.sound_exists(name):
-        say(f":x: Le fichier `{name}` n'a pas pu être décodé (format audio non reconnu).")
+    if not player.play_sequence(names, effects):
+        say(":x: Aucun de ces sons n'a pu être joué.")
         return
-    closest = player.find_closest_sound(name)
-    if closest and player.play(closest, effects):
-        say(f":arrow_forward: Lecture de `{closest}`{suffix} _(plus proche de `{name}`)_.")
-    else:
-        say(f":x: Son `{name}` introuvable. Utilise `/boomer_v3 list` pour voir les sons disponibles.")
+    say(":arrow_forward: Enchaînement : " + " → ".join(f"`{n}`" for n in names) + suffix)
 
 
 def _cmd_add(say, player: SoundPlayer, command: dict, name: str):
@@ -639,7 +660,7 @@ def _download_and_save(say, player: SoundPlayer, name: str, file_info: dict, ove
 def _usage() -> str:
     return (
         "*Commandes disponibles :*\n"
-        "• `/boomer_v3 play <nom> [effets]` — jouer un son\n"
+        "• `/boomer_v3 play <nom>[+<nom>…] [effets]` — jouer un son, ou plusieurs à la suite\n"
         f"    _{_EFFECTS_HELP}_\n"
         "• `/boomer_v3 stop` — arrêter la lecture en cours\n"
         "• `/boomer_v3 vol up|down|<0-100>` — régler le volume\n"

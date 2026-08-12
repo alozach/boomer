@@ -6,6 +6,8 @@ import threading
 import requests
 from slack_bolt import App
 from slack_sdk import WebClient
+from boomer import audio_effects
+from boomer.audio_effects import EffectError
 from boomer.sound_player import SoundPlayer, MIDI_ACTIONS
 from boomer.tts_engine import TtsEngine, LANG_MAP
 from boomer.midi_listener import MidiListener
@@ -14,6 +16,11 @@ from boomer.scheduler import Scheduler, parse_days, days_label
 logger = logging.getLogger(__name__)
 
 _NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+_EFFECTS_HELP = (
+    "Effets cumulables : `--reverse`, `--speed <0.25-4>`, "
+    "`--nightcore`, `--chipmunk`, `--vaporwave`, `--slow`, `--deep`"
+)
 
 def _note_name(note: int) -> str:
     return f"{_NOTE_NAMES[note % 12]}{(note // 12) - 1}"
@@ -194,19 +201,26 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
     return app
 
 
-def _cmd_play(say, player: SoundPlayer, name: str):
-    if not name:
-        say("Usage : `/boomer_v3 play <nom>`")
+def _cmd_play(say, player: SoundPlayer, arg: str):
+    if not arg:
+        say(f"Usage : `/boomer_v3 play <nom> [effets]`\n_{_EFFECTS_HELP}_")
         return
-    if player.play(name):
-        say(f":arrow_forward: Lecture de `{name}`.")
+    try:
+        name, effects = audio_effects.parse_effects(arg)
+    except EffectError as e:
+        say(f":x: {e}\n_{_EFFECTS_HELP}_")
+        return
+
+    suffix = audio_effects.describe(effects)
+    if player.play(name, effects):
+        say(f":arrow_forward: Lecture de `{name}`{suffix}.")
         return
     if player.sound_exists(name):
         say(f":x: Le fichier `{name}` n'a pas pu être décodé (format audio non reconnu).")
         return
     closest = player.find_closest_sound(name)
-    if closest and player.play(closest):
-        say(f":arrow_forward: Lecture de `{closest}` _(plus proche de `{name}`)_.")
+    if closest and player.play(closest, effects):
+        say(f":arrow_forward: Lecture de `{closest}`{suffix} _(plus proche de `{name}`)_.")
     else:
         say(f":x: Son `{name}` introuvable. Utilise `/boomer_v3 list` pour voir les sons disponibles.")
 
@@ -625,7 +639,8 @@ def _download_and_save(say, player: SoundPlayer, name: str, file_info: dict, ove
 def _usage() -> str:
     return (
         "*Commandes disponibles :*\n"
-        "• `/boomer_v3 play <nom>` — jouer un son\n"
+        "• `/boomer_v3 play <nom> [effets]` — jouer un son\n"
+        f"    _{_EFFECTS_HELP}_\n"
         "• `/boomer_v3 stop` — arrêter la lecture en cours\n"
         "• `/boomer_v3 vol up|down|<0-100>` — régler le volume\n"
         "• `/boomer_v3 list` — lister les sons disponibles\n"

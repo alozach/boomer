@@ -8,6 +8,8 @@ import shutil
 import threading
 import pygame
 
+from boomer import audio_effects
+
 logger = logging.getLogger(__name__)
 
 SUPPORTED_EXTENSIONS = {".wav", ".mp3", ".ogg", ".flac", ".aiff"}
@@ -45,32 +47,33 @@ class SoundPlayer:
                 return path
         return None
 
-    def play(self, name: str) -> bool:
+    def _play_path(self, path: str, effects: dict | None):
+        """Load, transform and start a file. Returns (channel, sound) or None. Caller holds the lock."""
+        try:
+            sound = pygame.mixer.Sound(path)
+        except pygame.error:
+            # e.g. extension lying about the real container/codec
+            logger.exception("Cannot decode sound file: %s", path)
+            return None
+        if effects:
+            sound = audio_effects.apply(sound, effects)
+        sound.set_volume(self._current_volume)
+        channel = sound.play()
+        return channel, sound
+
+    def play(self, name: str, effects: dict | None = None) -> bool:
         path = self._find_sound_file(name)
         if path is None:
             return False
         with self._lock:
             pygame.mixer.stop()
-            try:
-                sound = pygame.mixer.Sound(path)
-            except pygame.error:
-                # e.g. extension lying about the real container/codec
-                logger.exception("Cannot decode sound file: %s", path)
-                return False
-            sound.set_volume(self._current_volume)
-            sound.play()
-        return True
+            return self._play_path(path, effects) is not None
 
     def play_file(self, path: str) -> bool:
         with self._lock:
             pygame.mixer.stop()
-            try:
-                sound = pygame.mixer.Sound(path)
-            except pygame.error:
-                logger.exception("Cannot decode sound file: %s", path)
+            if self._play_path(path, None) is None:
                 return False
-            sound.set_volume(self._current_volume)
-            sound.play()
             while pygame.mixer.get_busy():
                 pygame.time.wait(50)
         return True

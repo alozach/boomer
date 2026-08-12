@@ -10,6 +10,7 @@ de synthèse ou planifier des lectures automatiques.
 
 - **Lecture de sons** — bibliothèque de fichiers audio (`.mp3`, `.wav`, `.ogg`, `.flac`, `.aiff`)
   dans [sounds/](sounds/), jouée via pygame.
+- **Effets** — `--reverse`, `--speed`, `--nightcore` et consorts déforment un son à la volée.
 - **Clavier MIDI** — chaque touche peut être associée à un son ou à une action volume ±,
   avec un bip de retour sur les touches de volume.
 - **Bot Slack** — commande slash `/boomer_v3` + panneaux interactifs à boutons
@@ -27,6 +28,7 @@ de synthèse ou planifier des lectures automatiques.
 | --- | --- |
 | [main.py](main.py) | Point d'entrée : instancie les composants, lance le thread MIDI et le bot Slack |
 | [boomer/sound_player.py](boomer/sound_player.py) | Bibliothèque de sons, lecture, volume/mute, mappings MIDI, persistance de `config.json` |
+| [boomer/audio_effects.py](boomer/audio_effects.py) | Parsing des flags d'effets et transformation des échantillons (numpy) |
 | [boomer/midi_listener.py](boomer/midi_listener.py) | Boucle d'écoute MIDI (mido), dispatch note → son ou action |
 | [boomer/slack_bot.py](boomer/slack_bot.py) | Commandes slash, panneaux interactifs, upload de fichiers |
 | [boomer/tts_engine.py](boomer/tts_engine.py) | Synthèse vocale edge-tts (nécessite une connexion internet) |
@@ -77,7 +79,7 @@ Puis `make start`.
 
 | Commande | Effet |
 | --- | --- |
-| `/boomer_v3 play <nom>` | Jouer un son |
+| `/boomer_v3 play <nom> [effets]` | Jouer un son |
 | `/boomer_v3 stop` | Arrêter la lecture en cours |
 | `/boomer_v3 list` | Lister les sons disponibles |
 | `/boomer_v3 sounds` | Panneau interactif, un bouton par son |
@@ -95,6 +97,17 @@ Puis `make start`.
 | `/boomer_v3 schedule list` / `cancel <id>` | Gérer les planifications |
 | `/boomer_v3 help` | Afficher l'aide |
 
+### Effets
+
+`[effets]` désigne partout la même liste de flags, cumulables :
+
+| Flag | Effet |
+| --- | --- |
+| `--reverse` | Joue le son à l'envers |
+| `--speed <0.25-4>` | Rééchantillonne : la vitesse et la hauteur changent ensemble |
+| `--nightcore` / `--chipmunk` | Accéléré (×1.35 / ×1.8) |
+| `--vaporwave` / `--slow` / `--deep` | Ralenti (×0.75 / ×0.7 / ×0.6) |
+
 ## Exploitation
 
 ```bash
@@ -110,6 +123,7 @@ make run        # lancer en avant-plan sans systemd (debug)
 ## Notes
 
 - Le volume par défaut est bas (2 %) : les enceintes visées saturent vite. Il monte par pas de 2 %.
+- Les effets sont calculés en mémoire avec numpy : les fichiers d'origine ne sont jamais modifiés.
 - La synthèse vocale passe par les serveurs Microsoft Edge : sans réseau, `tts` échoue
   (l'erreur est loguée, le reste continue de fonctionner).
 - Sans clavier MIDI branché au démarrage, l'écoute MIDI est simplement désactivée

@@ -20,6 +20,7 @@ de synthèse ou planifier des lectures automatiques.
 - **Synthèse vocale** — [edge-tts](https://github.com/rany2/edge-tts), voix neuronales,
   26 langues, vitesse réglable.
 - **Planification** — jouer un son à une heure donnée, tous les jours ou sur des jours choisis.
+- **Statistiques** — qui a joué quoi, combien de fois, et récap automatique le vendredi.
 - **Recherche approximative** — les noms de sons sont résolus en *fuzzy matching*,
   `/boomer_v3 play maarc` trouve `maaaarc`.
 
@@ -34,9 +35,11 @@ de synthèse ou planifier des lectures automatiques.
 | [boomer/slack_bot.py](boomer/slack_bot.py) | Commandes slash, panneaux interactifs, upload de fichiers |
 | [boomer/tts_engine.py](boomer/tts_engine.py) | Synthèse vocale edge-tts (nécessite une connexion internet) |
 | [boomer/scheduler.py](boomer/scheduler.py) | Planifications persistées dans `schedules.json` |
+| [boomer/stats.py](boomer/stats.py) | Historique des lectures persisté dans `stats.json` |
 
-L'état persistant vit dans deux fichiers JSON à la racine : `config.json`
-(mappings MIDI + références des panneaux Slack) et `schedules.json` (planifications).
+L'état persistant vit dans trois fichiers JSON à la racine : `config.json`
+(mappings MIDI + références des panneaux Slack), `schedules.json` (planifications)
+et `stats.json` (historique des lectures).
 Ces fichiers sont écrits par le bot au fil de l'eau et ne sont donc pas versionnés :
 seul le modèle `config.example.json` l'est, copié vers `config.json` à l'installation.
 
@@ -84,8 +87,9 @@ Puis `make start`.
 | --- | --- |
 | `/boomer_v3 play <nom>[+<nom>…] [effets]` | Jouer un son, ou plusieurs à la suite |
 | `/boomer_v3 random [effets]` | Jouer un son au hasard |
+| `/boomer_v3 stats [période] [moi]` | Classement des sons et des personnes |
 | `/boomer_v3 stop` | Arrêter la lecture en cours |
-| `/boomer_v3 list` | Lister les sons disponibles |
+| `/boomer_v3 list` | Lister les sons disponibles et leur nombre de lectures |
 | `/boomer_v3 sounds` | Panneau interactif, un bouton par son |
 | `/boomer_v3 panel` | Panneau de contrôle (stop, mute, volume, aléatoire) |
 | `/boomer_v3 add <nom>` | Ajouter un son (envoyer ensuite le fichier dans le canal) |
@@ -116,6 +120,23 @@ Puis `make start`.
 Sur un enchaînement, les effets s'appliquent à tous les sons :
 `/boomer_v3 play bonk+atchoum --nightcore`.
 
+### Statistiques
+
+Chaque lecture est enregistrée avec son déclencheur : la personne qui a tapé la commande ou
+cliqué le bouton, le clavier MIDI ou les planifications.
+
+Le clavier étant de loin le premier usage, il domine sinon tous les classements : le podium
+des personnes ne retient donc que les déclencheurs Slack, et le clavier et les
+planifications sont comptés à part, sur leur propre ligne. Les compteurs par son, eux,
+additionnent bien toutes les origines.
+
+`/boomer_v3 stats [jour|semaine|mois|tout] [moi]` affiche les sons les plus joués, avec leur
+nombre de lectures, et les personnes qui les déclenchent, avec le son que chacune joue le plus.
+`/boomer_v3 list` affiche le compteur de chaque son.
+
+Le vendredi à 17 h, Boomer poste de lui-même le récap de la semaine dans le canal du dernier
+panneau enregistré.
+
 ### Onglet Accueil
 
 L'onglet *Accueil* de l'app affiche en permanence le panneau de contrôle (stop, mute,
@@ -139,6 +160,7 @@ make run        # lancer en avant-plan sans systemd (debug)
 - Le volume par défaut est bas (2 %) : les enceintes visées saturent vite. Il monte par pas de 2 %.
 - Les effets sont calculés en mémoire avec numpy : les fichiers d'origine ne sont jamais modifiés.
 - Toute nouvelle lecture (bouton, commande, touche MIDI) interrompt l'enchaînement en cours.
+- `stats.json` est écrit par lots (10 s) pour épargner la carte SD, et à l'arrêt du service.
 - La synthèse vocale passe par les serveurs Microsoft Edge : sans réseau, `tts` échoue
   (l'erreur est loguée, le reste continue de fonctionner).
 - Sans clavier MIDI branché au démarrage, l'écoute MIDI est simplement désactivée

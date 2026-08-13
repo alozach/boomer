@@ -1,3 +1,4 @@
+import datetime
 import logging
 import os
 import re
@@ -9,6 +10,7 @@ from slack_sdk import WebClient
 from boomer import audio_effects
 from boomer.audio_effects import EffectError
 from boomer.sound_player import SoundPlayer, MIDI_ACTIONS
+from boomer.stats import Stats, ACTOR_MIDI, ACTOR_SCHEDULE
 from boomer.tts_engine import TtsEngine, LANG_MAP
 from boomer.midi_listener import MidiListener
 from boomer.scheduler import Scheduler, parse_days, days_label
@@ -21,6 +23,18 @@ _EFFECTS_HELP = (
     "Effets cumulables : `--reverse`, `--speed <0.25-4>`, "
     "`--nightcore`, `--chipmunk`, `--vaporwave`, `--slow`, `--deep`"
 )
+
+# Weekly recap: Friday 17:00
+_RECAP_WEEKDAY = 4
+_RECAP_HOUR = 17
+
+_PERIOD_ALIASES = {
+    "jour": "day", "aujourdhui": "day", "day": "day", "today": "day",
+    "semaine": "week", "week": "week",
+    "mois": "month", "month": "month",
+    "tout": "all", "all": "all", "total": "all",
+}
+_PERIOD_LABELS = {"day": "aujourd'hui", "week": "cette semaine", "month": "ce mois-ci", "all": "depuis toujours"}
 
 # Slack caps a view at 100 blocks; keep a margin for the control panel
 _MAX_HOME_BLOCKS = 90
@@ -40,7 +54,7 @@ _last_played: str | None = None
 
 
 def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
-                     scheduler: Scheduler) -> App:
+                     scheduler: Scheduler, stats: Stats) -> App:
     app = App(
         token=os.environ["SLACK_BOT_TOKEN"],
         signing_secret=os.environ["SLACK_SIGNING_SECRET"],
@@ -59,15 +73,17 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
         if action in ("help", "aide", ""):
             say(_usage())
         elif action == "play":
-            _cmd_play(say, player, arg)
+            _cmd_play(say, player, stats, command["user_id"], arg)
         elif action in ("random", "aleatoire", "hasard"):
-            _cmd_random(say, player, arg)
+            _cmd_random(say, player, stats, command["user_id"], arg)
+        elif action in ("stats", "recap", "top"):
+            _cmd_stats(say, stats, command["user_id"], arg)
         elif action == "add":
             _cmd_add(say, player, command, arg)
         elif action == "rename":
             _cmd_rename(say, player, arg)
         elif action == "list":
-            _cmd_list(say, player)
+            _cmd_list(say, player, stats)
         elif action in ("sounds", "sons"):
             _cmd_sounds_panel(say, player, command["channel_id"])
         elif action in ("delete", "supprimer", "remove"):
@@ -75,7 +91,7 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
         elif action == "map":
             _cmd_map(say, slack_client, player, midi, command["channel_id"], command["user_id"], arg)
         elif action == "tts":
-            _cmd_tts(say, tts, arg)
+            _cmd_tts(say, tts, stats, command["user_id"], arg)
         elif action == "panel":
             _cmd_panel(say, player, command["channel_id"])
         elif action == "stop":
@@ -118,6 +134,7 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
     def on_midi_play(name: str):
         global _last_played
         _last_played = name
+        stats.record(name, ACTOR_MIDI)
         info = player.get_panel_info() or player.get_panel_info("sounds_panel")
         if not info:
             return
@@ -139,6 +156,7 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
             )
             return False
         _last_played = sound_name
+        stats.record(sound_name, body["user"]["id"])
         _refresh_sounds_panel(client, player)
         return True
 
@@ -146,7 +164,7 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
     def handle_play_button(ack, body, client):
         ack()
         play_from_button(body, client, body["actions"][0]["value"])
-        _refresh_surface(body, client, player)
+        _refresh_surface(body, client, player, stats)
 
     @app.action("boomer_random")
     def handle_action_random(ack, body, client):
@@ -157,13 +175,13 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
             return
         if play_from_button(body, client, name):
             _notify_from_surface(body, client, f":game_die: Au hasard : `{name}`")
-        _refresh_surface(body, client, player)
+        _refresh_surface(body, client, player, stats)
 
     @app.action("boomer_stop")
     def handle_action_stop(ack, body, client):
         ack()
         player.stop()
-        _refresh_surface(body, client, player)
+        _refresh_surface(body, client, player, stats)
 
     @app.action("boomer_mute_toggle")
     def handle_action_mute_toggle(ack, body, client):
@@ -172,27 +190,28 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
             player.unmute()
         else:
             player.mute()
-        _refresh_surface(body, client, player)
+        _refresh_surface(body, client, player, stats)
 
     @app.action("boomer_vol_down")
     def handle_action_vol_down(ack, body, client):
         ack()
         player.volume_down()
-        _refresh_surface(body, client, player)
+        _refresh_surface(body, client, player, stats)
 
     @app.action("boomer_vol_up")
     def handle_action_vol_up(ack, body, client):
         ack()
         player.volume_up()
-        _refresh_surface(body, client, player)
+        _refresh_surface(body, client, player, stats)
 
     @app.event("app_home_opened")
     def handle_home_opened(event, client):
-        _publish_home(client, player, event["user"])
+        _publish_home(client, player, stats, event["user"])
 
     def on_scheduled_fire(schedule_id: str, sound: str):
         global _last_played
         _last_played = sound
+        stats.record(sound, ACTOR_SCHEDULE)
         info = player.get_panel_info() or player.get_panel_info("sounds_panel")
         if not info:
             return
@@ -221,7 +240,46 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
         file_info = files[0]
         _download_and_save(say, player, name, file_info, overwrite=False)
 
+    _start_weekly_recap(slack_client, player, stats)
+
     return app
+
+def _start_weekly_recap(client: WebClient, player: SoundPlayer, stats: Stats):
+    """Post the week's leaderboard in the panel channel, then re-arm for next week."""
+    def fire():
+        _start_weekly_recap(client, player, stats)
+        info = player.get_panel_info() or player.get_panel_info("sounds_panel")
+        if not info:
+            logger.info("Weekly recap skipped: no known panel channel.")
+            return
+        if stats.total("week") == 0:
+            return
+        try:
+            client.chat_postMessage(
+                channel=info["channel"],
+                text="Récap de la semaine",
+                blocks=_stats_blocks(stats, "week", title=":trophy: *Récap de la semaine*"),
+            )
+        except Exception:
+            logger.exception("Cannot post the weekly recap")
+
+    timer = threading.Timer(_seconds_until_recap(), fire)
+    timer.daemon = True
+    timer.start()
+
+
+def _seconds_until_recap() -> float:
+    now = datetime.datetime.now()
+    days_ahead = (_RECAP_WEEKDAY - now.weekday()) % 7
+    target = (now + datetime.timedelta(days=days_ahead)).replace(
+        hour=_RECAP_HOUR, minute=0, second=0, microsecond=0
+    )
+    if target <= now:
+        target += datetime.timedelta(days=7)
+    return (target - now).total_seconds()
+
+
+
 
 
 def _resolve_names(say, player: SoundPlayer, raw: str) -> list[str] | None:
@@ -242,7 +300,7 @@ def _resolve_names(say, player: SoundPlayer, raw: str) -> list[str] | None:
     return resolved or None
 
 
-def _cmd_play(say, player: SoundPlayer, arg: str):
+def _cmd_play(say, player: SoundPlayer, stats: Stats, user: str, arg: str):
     global _last_played
     if not arg:
         say(f"Usage : `/boomer_v3 play <nom>[+<nom>…] [effets]`\n_{_EFFECTS_HELP}_")
@@ -264,15 +322,18 @@ def _cmd_play(say, player: SoundPlayer, arg: str):
             return
         say(f":arrow_forward: Lecture de `{names[0]}`{suffix}.")
         _last_played = names[0]
+        stats.record(names[0], user)
         return
     if not player.play_sequence(names, effects):
         say(":x: Aucun de ces sons n'a pu être joué.")
         return
     say(":arrow_forward: Enchaînement : " + " → ".join(f"`{n}`" for n in names) + suffix)
     _last_played = names[-1]
+    for name in names:
+        stats.record(name, user)
 
 
-def _cmd_random(say, player: SoundPlayer, arg: str):
+def _cmd_random(say, player: SoundPlayer, stats: Stats, user: str, arg: str):
     global _last_played
     try:
         _, effects = audio_effects.parse_effects(arg)
@@ -287,6 +348,7 @@ def _cmd_random(say, player: SoundPlayer, arg: str):
         say(f":x: Le fichier `{name}` n'a pas pu être décodé (format audio non reconnu).")
         return
     _last_played = name
+    stats.record(name, user)
     say(f":game_die: Au hasard : `{name}`{audio_effects.describe(effects)}")
 
 
@@ -411,10 +473,10 @@ def _is_home(body: dict) -> bool:
     return body.get("container", {}).get("type") == "view"
 
 
-def _refresh_surface(body: dict, client: WebClient, player: SoundPlayer):
+def _refresh_surface(body: dict, client: WebClient, player: SoundPlayer, stats: Stats):
     """Redraw whichever surface the button was clicked from: App Home or a posted panel."""
     if _is_home(body):
-        _publish_home(client, player, body["user"]["id"])
+        _publish_home(client, player, stats, body["user"]["id"])
         return
     message = body.get("message") or {}
     channel = (body.get("channel") or {}).get("id")
@@ -436,7 +498,7 @@ def _notify_from_surface(body: dict, client: WebClient, text: str):
         logger.exception("Cannot post notification to %s", channel)
 
 
-def _home_view(player: SoundPlayer) -> dict:
+def _home_view(player: SoundPlayer, stats: Stats) -> dict:
     header = ":musical_note: *Sons disponibles*"
     if _last_played:
         header += f"  |  :arrow_forward: `{_last_played}`"
@@ -445,16 +507,21 @@ def _home_view(player: SoundPlayer) -> dict:
     blocks.append({"type": "divider"})
     blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": header}})
     blocks.extend(_sound_button_blocks(player)[:_MAX_HOME_BLOCKS])
+    plays = stats.total("week")
+    hint = (f"{plays} lectures cette semaine  |  " if plays else "")
     blocks.append({
         "type": "context",
-        "elements": [{"type": "mrkdwn", "text": "`/boomer_v3 play a+b+c --reverse` pour enchaîner"}],
+        "elements": [{
+            "type": "mrkdwn",
+            "text": hint + "`/boomer_v3 play a+b+c --reverse` pour enchaîner  |  `/boomer_v3 stats` pour le classement",
+        }],
     })
     return {"type": "home", "blocks": blocks}
 
 
-def _publish_home(client: WebClient, player: SoundPlayer, user_id: str):
+def _publish_home(client: WebClient, player: SoundPlayer, stats: Stats, user_id: str):
     try:
-        client.views_publish(user_id=user_id, view=_home_view(player))
+        client.views_publish(user_id=user_id, view=_home_view(player, stats))
     except Exception:
         logger.exception("Cannot publish the App Home view")
 
@@ -564,12 +631,16 @@ def _cmd_map(say, client: WebClient, player: SoundPlayer, midi: MidiListener, ch
     say(f":musical_keyboard: Appuie sur la touche MIDI à assigner à `{name}`… (60 s)")
 
 
-def _cmd_list(say, player: SoundPlayer):
+def _cmd_list(say, player: SoundPlayer, stats: Stats):
     sounds = player.list_sounds()
     if not sounds:
         say(":speaker: Aucun son disponible pour le moment.")
         return
-    lines = "\n".join(f"• `{s}`" for s in sounds)
+    counts = dict(stats.top_sounds(limit=None))
+    lines = "\n".join(
+        f"• `{s}` — {counts[s]} lecture{'s' if counts[s] > 1 else ''}" if s in counts else f"• `{s}` — jamais joué"
+        for s in sounds
+    )
     say(f":musical_note: Sons disponibles :\n{lines}")
 
 
@@ -688,7 +759,86 @@ def _cmd_schedule(say, scheduler: Scheduler, player: SoundPlayer, arg: str):
     say(f":white_check_mark: Planifié `{sound}` à {time_str} ({label}). ID : `{sid}`")
 
 
-def _cmd_tts(say, tts: TtsEngine, arg: str):
+def _actor_label(actor: str) -> str:
+    if actor == ACTOR_MIDI:
+        return ":musical_keyboard: clavier MIDI"
+    if actor == ACTOR_SCHEDULE:
+        return ":alarm_clock: planifications"
+    return f"<@{actor}>"
+
+
+def _stats_blocks(stats: Stats, period: str, title: str | None = None) -> list:
+    total = stats.total(period)
+    head = title or f":bar_chart: *Classement — {_PERIOD_LABELS[period]}*"
+    if not total:
+        return [{"type": "section", "text": {"type": "mrkdwn", "text": f"{head}\n_Aucune lecture sur la période._"}}]
+
+    medals = [":first_place_medal:", ":second_place_medal:", ":third_place_medal:"]
+    sounds = "\n".join(
+        f"{medals[i] if i < 3 else '   •'} `{name}` — {count}"
+        for i, (name, count) in enumerate(stats.top_sounds(period, limit=5))
+    )
+    humans = stats.top_actors(period, limit=5, humans_only=True)
+    if humans:
+        actors = "\n".join(
+            f"{medals[i] if i < 3 else '   •'} {_actor_label(actor)} — {count}"
+            f" _(`{stats.signature_sound(actor, period)}` en tête)_"
+            for i, (actor, count) in enumerate(humans)
+        )
+    else:
+        actors = "_Personne depuis Slack sur la période._"
+
+    # The MIDI keyboard would top every ranking, so it gets its own line
+    offstage = []
+    midi_total = stats.total(period, actor=ACTOR_MIDI)
+    if midi_total:
+        offstage.append(
+            f"{_actor_label(ACTOR_MIDI)} — {midi_total}"
+            f" _(`{stats.signature_sound(ACTOR_MIDI, period)}` en tête)_"
+        )
+    scheduled = stats.top_sounds(period, actor=ACTOR_SCHEDULE, limit=None)
+    if scheduled:
+        offstage.append(
+            f"{_actor_label(ACTOR_SCHEDULE)}\n"
+            + "\n".join(f"• `{name}` — {count}" for name, count in scheduled)
+        )
+
+    blocks = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"{head}\n{total} lectures au total."}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Sons les plus joués*\n{sounds}"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Déclencheurs*\n{actors}"}},
+    ]
+    if offstage:
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": "\n".join(offstage)}]})
+    return blocks
+
+
+def _cmd_stats(say, stats: Stats, user: str, arg: str):
+    parts = arg.lower().split()
+    period = "week"
+    mine = False
+    for part in parts:
+        if part in _PERIOD_ALIASES:
+            period = _PERIOD_ALIASES[part]
+        elif part in ("me", "moi"):
+            mine = True
+        else:
+            say("Usage : `/boomer_v3 stats [jour|semaine|mois|tout] [moi]`")
+            return
+
+    if not mine:
+        say(blocks=_stats_blocks(stats, period), text="Classement Boomer")
+        return
+
+    total = stats.total(period, actor=user)
+    if not total:
+        say(f":bar_chart: Aucune lecture à ton actif {_PERIOD_LABELS[period]}. Timide.")
+        return
+    top = "\n".join(f"• `{name}` — {count}" for name, count in stats.top_sounds(period, actor=user, limit=5))
+    say(f":bar_chart: *Tes stats — {_PERIOD_LABELS[period]}*\n{total} lectures.\n{top}")
+
+
+def _cmd_tts(say, tts: TtsEngine, stats: Stats, user: str, arg: str):
     if not arg:
         say("Usage : `/boomer_v3 tts <texte> [lang]` | `tts rate <50-400>` | `tts list`")
         return
@@ -713,6 +863,7 @@ def _cmd_tts(say, tts: TtsEngine, arg: str):
         text = arg
     lang_hint = f" _(lang : `{lang or 'fr'}`)_"
     say(f":speaking_head_in_silhouette: *{text}*{lang_hint}")
+    stats.record("tts", user)
     threading.Thread(target=tts.speak, args=(text, lang), daemon=True).start()
 
 
@@ -776,6 +927,7 @@ def _usage() -> str:
         "*Commandes disponibles :*\n"
         "• `/boomer_v3 play <nom>[+<nom>…] [effets]` — jouer un son, ou plusieurs à la suite\n"
         "• `/boomer_v3 random [effets]` — jouer un son au hasard\n"
+        "• `/boomer_v3 stats [jour|semaine|mois|tout] [moi]` — classement des sons et des personnes\n"
         f"    _{_EFFECTS_HELP}_\n"
         "• `/boomer_v3 stop` — arrêter la lecture en cours\n"
         "• `/boomer_v3 vol up|down|<0-100>` — régler le volume\n"

@@ -4,6 +4,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 import requests
 from slack_bolt import App
 from slack_sdk import WebClient
@@ -40,6 +41,9 @@ _PERIOD_LABELS = {"day": "aujourd'hui", "week": "cette semaine", "month": "ce mo
 # Slack caps a view at 100 blocks; keep a margin for the control panel
 _MAX_HOME_BLOCKS = 90
 
+# Above this, a request is worth a warning in the logs
+_SLOW_REQUEST_SECONDS = 1.0
+
 def _note_name(note: int) -> str:
     return f"{_NOTE_NAMES[note % 12]}{(note // 12) - 1}"
 
@@ -67,6 +71,24 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
     )
     # Reusable WebClient for async callbacks outside the Slack request context
     slack_client = WebClient(token=os.environ["SLACK_BOT_TOKEN"])
+
+    @app.middleware
+    def log_slow_requests(body, next):
+        """Split the blame for a late message: Slack delivery lag vs. our own handling time."""
+        started = time.monotonic()
+        try:
+            next()
+        finally:
+            elapsed = time.monotonic() - started
+            event_time = body.get("event_time")
+            lag = time.time() - event_time if event_time else None
+            if elapsed > _SLOW_REQUEST_SECONDS or (lag is not None and lag > _SLOW_REQUEST_SECONDS):
+                logger.warning(
+                    "Slow Slack request: handled in %.1f s, delivered %s after the event (type=%s)",
+                    elapsed,
+                    f"{lag:.1f} s" if lag is not None else "n/a",
+                    body.get("type") or body.get("command") or "?",
+                )
 
     @app.command("/boomer_v3")
     def handle_boomer(ack, command, say):
@@ -144,38 +166,38 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
     def play_from_button(body, client, sound_name: str) -> bool:
         global _last_played
         if not player.play(sound_name):
-            _notify_from_surface(
-                body, client,
+            _in_background(
+                _notify_from_surface, body, client,
                 f":x: Le fichier `{sound_name}` n'a pas pu être décodé (format audio non reconnu).",
             )
             return False
         _last_played = sound_name
         stats.record(sound_name, body["user"]["id"])
-        _refresh_sounds_panel(client, player)
+        _in_background(_refresh_sounds_panel, client, player)
         return True
 
     @app.action(re.compile(r"^boomer_play_\d+$"))
     def handle_play_button(ack, body, client):
         ack()
         play_from_button(body, client, body["actions"][0]["value"])
-        _refresh_surface(body, client, player, stats)
+        _in_background(_refresh_surface, body, client, player, stats)
 
     @app.action("boomer_random")
     def handle_action_random(ack, body, client):
         ack()
         name = player.random_sound()
         if name is None:
-            _notify_from_surface(body, client, ":speaker: Aucun son disponible.")
+            _in_background(_notify_from_surface, body, client, ":speaker: Aucun son disponible.")
             return
         if play_from_button(body, client, name):
-            _notify_from_surface(body, client, f":game_die: Au hasard : `{name}`")
-        _refresh_surface(body, client, player, stats)
+            _in_background(_notify_from_surface, body, client, f":game_die: Au hasard : `{name}`")
+        _in_background(_refresh_surface, body, client, player, stats)
 
     @app.action("boomer_stop")
     def handle_action_stop(ack, body, client):
         ack()
         player.stop()
-        _refresh_surface(body, client, player, stats)
+        _in_background(_refresh_surface, body, client, player, stats)
 
     @app.action("boomer_mute_toggle")
     def handle_action_mute_toggle(ack, body, client):
@@ -184,19 +206,19 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
             player.unmute()
         else:
             player.mute()
-        _refresh_surface(body, client, player, stats)
+        _in_background(_refresh_surface, body, client, player, stats)
 
     @app.action("boomer_vol_down")
     def handle_action_vol_down(ack, body, client):
         ack()
         player.volume_down()
-        _refresh_surface(body, client, player, stats)
+        _in_background(_refresh_surface, body, client, player, stats)
 
     @app.action("boomer_vol_up")
     def handle_action_vol_up(ack, body, client):
         ack()
         player.volume_up()
-        _refresh_surface(body, client, player, stats)
+        _in_background(_refresh_surface, body, client, player, stats)
 
     @app.shortcut("boomer_speak")
     def handle_speak_shortcut(ack, shortcut, respond, client):
@@ -211,7 +233,7 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
 
     @app.event("app_home_opened")
     def handle_home_opened(event, client):
-        _publish_home(client, player, stats, event["user"])
+        _in_background(_publish_home, client, player, stats, event["user"])
 
     def on_scheduled_fire(schedule_id: str, sound: str):
         global _last_played
@@ -490,6 +512,17 @@ def _post_volume_notice(client: WebClient, player: SoundPlayer, action: str):
         client.chat_postMessage(channel=info["channel"], text=text)
     except SlackApiError:
         logger.exception("Cannot post the volume notice")
+
+
+def _in_background(fn, *args):
+    """Slack API calls do not gate the answer: keep the handler thread free."""
+    def run():
+        try:
+            fn(*args)
+        except Exception:
+            logger.exception("Background Slack call failed: %s", getattr(fn, "__name__", fn))
+
+    threading.Thread(target=run, daemon=True).start()
 
 
 def _refresh_sounds_panel(client: WebClient, player: SoundPlayer):

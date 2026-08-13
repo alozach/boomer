@@ -184,3 +184,8 @@ make run        # lancer en avant-plan sans systemd (debug)
   (l'erreur est loguée, le reste continue de fonctionner).
 - Sans clavier MIDI branché au démarrage, l'écoute MIDI est simplement désactivée
   (un avertissement est logué) ; le bot Slack reste pleinement fonctionnel.
+- Les appels à l'API Slack (rafraîchissement des panneaux, notifications) partent en
+  arrière-plan : ni le son ni l'accusé de réception n'attendent le réseau.
+- Toute requête Slack traitée en plus d'une seconde, ou livrée avec plus d'une seconde de
+  retard, est signalée dans les logs (`make logs`) avec les deux durées séparées, ce qui
+  distingue une lenteur de Boomer d'une lenteur de livraison.

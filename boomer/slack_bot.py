@@ -7,6 +7,7 @@ import threading
 import requests
 from slack_bolt import App
 from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
 from boomer import audio_effects
 from boomer.audio_effects import EffectError
 from boomer.sound_player import SoundPlayer, MIDI_ACTIONS
@@ -203,6 +204,17 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
         ack()
         player.volume_up()
         _refresh_surface(body, client, player, stats)
+
+    @app.shortcut("boomer_speak")
+    def handle_speak_shortcut(ack, shortcut, respond, client):
+        ack()
+        text = _clean_slack_text(shortcut.get("message", {}).get("text", ""))
+        if not text:
+            respond(":x: Ce message ne contient pas de texte à lire.")
+            return
+        stats.record("tts", shortcut["user"]["id"])
+        threading.Thread(target=tts.speak, args=(text, None), daemon=True).start()
+        _announce_speak(client, respond, shortcut, text)
 
     @app.event("app_home_opened")
     def handle_home_opened(event, client):
@@ -836,6 +848,42 @@ def _cmd_stats(say, stats: Stats, user: str, arg: str):
         return
     top = "\n".join(f"• `{name}` — {count}" for name, count in stats.top_sounds(period, actor=user, limit=5))
     say(f":bar_chart: *Tes stats — {_PERIOD_LABELS[period]}*\n{total} lectures.\n{top}")
+
+
+_MENTION_RE = re.compile(r"<[@#!][^>|]+(?:\|([^>]*))?>")
+_LINK_RE = re.compile(r"<(https?://[^>|]+)(?:\|([^>]*))?>")
+_EMOJI_RE = re.compile(r":[a-z0-9_+-]+:")
+_MAX_SPEAK_CHARS = 300
+
+
+def _announce_speak(client: WebClient, respond, shortcut: dict, text: str):
+    """Tell the channel what was read aloud, or fall back to the caller if Boomer is not a member."""
+    user = shortcut["user"]["id"]
+    channel = (shortcut.get("channel") or {}).get("id")
+    if channel:
+        try:
+            client.chat_postMessage(
+                channel=channel,
+                text=f":speaking_head_in_silhouette: <@{user}> a fait lire à voix haute : « {text} »",
+            )
+            return
+        except SlackApiError as e:
+            # Typically not_in_channel: the shortcut works everywhere, posting does not
+            logger.info("Cannot announce in %s (%s), answering privately", channel, e)
+    respond(f":speaking_head_in_silhouette: Lecture à voix haute de « {text} »")
+
+
+def _clean_slack_text(text: str) -> str:
+    """Strip Slack markup so the TTS engine does not read raw user IDs and URLs aloud."""
+    text = _LINK_RE.sub(lambda m: m.group(2) or m.group(1), text)
+    text = _MENTION_RE.sub(lambda m: m.group(1) or "", text)
+    text = _EMOJI_RE.sub("", text)
+    text = re.sub(r"^\s*>+", " ", text, flags=re.MULTILINE)
+    text = re.sub(r"[*_~`]", " ", text)
+    # Unescape last, so the entities do not get parsed as markup above
+    text = text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:_MAX_SPEAK_CHARS]
 
 
 def _cmd_tts(say, tts: TtsEngine, stats: Stats, user: str, arg: str):

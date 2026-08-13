@@ -18,7 +18,7 @@ de synthèse ou planifier des lectures automatiques.
   (contrôle du volume, un bouton par son), et un onglet *Accueil* permanent.
 - **Ajout de sons depuis Slack** — `add <nom>` puis dépôt du fichier dans le canal.
 - **Synthèse vocale** — [edge-tts](https://github.com/rany2/edge-tts), voix neuronales,
-  26 langues, vitesse réglable.
+  26 langues, vitesse réglable, déclenchable sur n'importe quel message via un raccourci.
 - **Planification** — jouer un son à une heure donnée, tous les jours ou sur des jours choisis.
 - **Statistiques** — qui a joué quoi, combien de fois, et récap automatique le vendredi.
 - **Recherche approximative** — les noms de sons sont résolus en *fuzzy matching*,
@@ -79,7 +79,9 @@ Puis `make start`.
    nécessaire pour récupérer les fichiers audio envoyés après un `add`, et `app_home_opened`
    pour l'onglet *Accueil*.
 6. **App Home** : activer l'onglet *Accueil* (*Home Tab*) dans les *App Features*.
-7. Inviter le bot dans le canal voulu.
+7. **Shortcut** : créer un raccourci *sur message* de callback ID `boomer_speak`
+   (nom suggéré : « Lire à voix haute »).
+8. Inviter le bot dans le canal voulu.
 
 ## Utilisation
 
@@ -136,6 +138,19 @@ nombre de lectures, et les personnes qui les déclenchent, avec le son que chacu
 
 Le vendredi à 17 h, Boomer poste de lui-même le récap de la semaine dans le canal du dernier
 panneau enregistré.
+
+### Lire un message à voix haute
+
+Le menu *Plus d'actions* (⋮) de n'importe quel message propose « Lire à voix haute » : le
+texte du message part dans la synthèse vocale, et Boomer annonce dans le canal qui a fait
+lire quoi.
+
+Le raccourci fonctionne dans tous les canaux du workspace, y compris ceux où le bot n'est
+pas invité — mais il ne peut alors pas y poster : la confirmation est dans ce cas visible
+de la seule personne qui l'a déclenché.
+
+Le markup Slack (mentions, liens, emojis, citations) est nettoyé avant lecture, et le texte
+est tronqué à 300 caractères.
 
 ### Onglet Accueil
 

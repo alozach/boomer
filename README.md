@@ -15,7 +15,7 @@ de synthèse ou planifier des lectures automatiques.
 - **Clavier MIDI** — chaque touche peut être associée à un son ou à une action volume ±,
   avec un bip de retour sur les touches de volume.
 - **Bot Slack** — commande slash `/boomer_v3` + panneaux interactifs à boutons
-  (contrôle du volume, un bouton par son).
+  (contrôle du volume, un bouton par son), et un onglet *Accueil* permanent.
 - **Ajout de sons depuis Slack** — `add <nom>` puis dépôt du fichier dans le canal.
 - **Synthèse vocale** — [edge-tts](https://github.com/rany2/edge-tts), voix neuronales,
   26 langues, vitesse réglable.
@@ -73,8 +73,10 @@ Puis `make start`.
 3. **Slash command** : `/boomer_v3`.
 4. **Bot token scopes** : `chat:write`, `commands`, `files:read`.
 5. **Event subscriptions** : `message.channels` (et `message.groups` pour les canaux privés),
-   nécessaire pour récupérer les fichiers audio envoyés après un `add`.
-6. Inviter le bot dans le canal voulu.
+   nécessaire pour récupérer les fichiers audio envoyés après un `add`, et `app_home_opened`
+   pour l'onglet *Accueil*.
+6. **App Home** : activer l'onglet *Accueil* (*Home Tab*) dans les *App Features*.
+7. Inviter le bot dans le canal voulu.
 
 ## Utilisation
 
@@ -111,6 +113,12 @@ Puis `make start`.
 
 Sur un enchaînement, les effets s'appliquent à tous les sons :
 `/boomer_v3 play bonk+atchoum --nightcore`.
+
+### Onglet Accueil
+
+L'onglet *Accueil* de l'app affiche en permanence le panneau de contrôle (stop, mute,
+volume), puis les boutons de tous les sons. Il se met à jour à chaque ouverture et après
+chaque clic, sans avoir à reposter un panneau dans un canal.
 
 ## Exploitation
 

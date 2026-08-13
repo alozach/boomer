@@ -22,6 +22,9 @@ _EFFECTS_HELP = (
     "`--nightcore`, `--chipmunk`, `--vaporwave`, `--slow`, `--deep`"
 )
 
+# Slack caps a view at 100 blocks; keep a margin for the control panel
+_MAX_HOME_BLOCKS = 90
+
 def _note_name(note: int) -> str:
     return f"{_NOTE_NAMES[note % 12]}{(note // 12) - 1}"
 
@@ -31,6 +34,9 @@ _pending_additions: dict[tuple[str, str], str] = {}
 # (channel_id, user_id) -> ongoing MIDI assignment state
 _pending_maps: dict[tuple[str, str], dict] = {}
 _pending_maps_lock = threading.Lock()
+
+# Last sound played, shown on the panels and the App Home
+_last_played: str | None = None
 
 
 def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
@@ -108,6 +114,8 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
     midi.set_volume_action_callback(on_midi_volume)
 
     def on_midi_play(name: str):
+        global _last_played
+        _last_played = name
         info = player.get_panel_info() or player.get_panel_info("sounds_panel")
         if not info:
             return
@@ -120,33 +128,29 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
 
     midi.set_play_callback(on_midi_play)
 
+    def play_from_button(body, client, sound_name: str) -> bool:
+        global _last_played
+        if not player.play(sound_name):
+            _notify_from_surface(
+                body, client,
+                f":x: Le fichier `{sound_name}` n'a pas pu être décodé (format audio non reconnu).",
+            )
+            return False
+        _last_played = sound_name
+        _refresh_sounds_panel(client, player)
+        return True
+
     @app.action(re.compile(r"^boomer_play_\d+$"))
     def handle_play_button(ack, body, client):
         ack()
-        sound_name = body["actions"][0]["value"]
-        if not player.play(sound_name):
-            client.chat_postMessage(
-                channel=body["channel"]["id"],
-                text=f":x: Le fichier `{sound_name}` n'a pas pu être décodé (format audio non reconnu).",
-            )
-            return
-        info = player.get_panel_info("sounds_panel")
-        if info:
-            try:
-                client.chat_update(
-                    channel=info["channel"],
-                    ts=info["ts"],
-                    blocks=_sounds_panel_blocks(player, last_played=sound_name),
-                    text="Sons disponibles",
-                )
-            except Exception:
-                player.clear_panel_info("sounds_panel")
+        play_from_button(body, client, body["actions"][0]["value"])
+        _refresh_surface(body, client, player)
 
     @app.action("boomer_stop")
     def handle_action_stop(ack, body, client):
         ack()
         player.stop()
-        _refresh_panel(body, client, player)
+        _refresh_surface(body, client, player)
 
     @app.action("boomer_mute_toggle")
     def handle_action_mute_toggle(ack, body, client):
@@ -155,21 +159,27 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
             player.unmute()
         else:
             player.mute()
-        _refresh_panel(body, client, player)
+        _refresh_surface(body, client, player)
 
     @app.action("boomer_vol_down")
     def handle_action_vol_down(ack, body, client):
         ack()
         player.volume_down()
-        _refresh_panel(body, client, player)
+        _refresh_surface(body, client, player)
 
     @app.action("boomer_vol_up")
     def handle_action_vol_up(ack, body, client):
         ack()
         player.volume_up()
-        _refresh_panel(body, client, player)
+        _refresh_surface(body, client, player)
+
+    @app.event("app_home_opened")
+    def handle_home_opened(event, client):
+        _publish_home(client, player, event["user"])
 
     def on_scheduled_fire(schedule_id: str, sound: str):
+        global _last_played
+        _last_played = sound
         info = player.get_panel_info() or player.get_panel_info("sounds_panel")
         if not info:
             return
@@ -220,6 +230,7 @@ def _resolve_names(say, player: SoundPlayer, raw: str) -> list[str] | None:
 
 
 def _cmd_play(say, player: SoundPlayer, arg: str):
+    global _last_played
     if not arg:
         say(f"Usage : `/boomer_v3 play <nom>[+<nom>…] [effets]`\n_{_EFFECTS_HELP}_")
         return
@@ -239,11 +250,13 @@ def _cmd_play(say, player: SoundPlayer, arg: str):
             say(f":x: Le fichier `{names[0]}` n'a pas pu être décodé (format audio non reconnu).")
             return
         say(f":arrow_forward: Lecture de `{names[0]}`{suffix}.")
+        _last_played = names[0]
         return
     if not player.play_sequence(names, effects):
         say(":x: Aucun de ces sons n'a pu être joué.")
         return
     say(":arrow_forward: Enchaînement : " + " → ".join(f"`{n}`" for n in names) + suffix)
+    _last_played = names[-1]
 
 
 def _cmd_add(say, player: SoundPlayer, command: dict, name: str):
@@ -343,10 +356,71 @@ def _refresh_stored_panel(client: WebClient, player: SoundPlayer):
         player.clear_panel_info()
 
 
-def _refresh_panel(body: dict, client: WebClient, player: SoundPlayer):
-    channel = body["channel"]["id"]
-    ts = body["message"]["ts"]
-    client.chat_update(channel=channel, ts=ts, blocks=_panel_blocks(player), text="Boomer Control Panel")
+def _refresh_sounds_panel(client: WebClient, player: SoundPlayer):
+    info = player.get_panel_info("sounds_panel")
+    if not info:
+        return
+    try:
+        client.chat_update(
+            channel=info["channel"],
+            ts=info["ts"],
+            blocks=_sounds_panel_blocks(player, last_played=_last_played),
+            text="Sons disponibles",
+        )
+    except Exception:
+        player.clear_panel_info("sounds_panel")
+
+
+def _is_home(body: dict) -> bool:
+    return body.get("container", {}).get("type") == "view"
+
+
+def _refresh_surface(body: dict, client: WebClient, player: SoundPlayer):
+    """Redraw whichever surface the button was clicked from: App Home or a posted panel."""
+    if _is_home(body):
+        _publish_home(client, player, body["user"]["id"])
+        return
+    message = body.get("message") or {}
+    channel = (body.get("channel") or {}).get("id")
+    if not message.get("ts") or not channel:
+        return
+    # The sounds panel carries its own blocks; only the control panel is refreshed here
+    if any(b.get("action_id", "").startswith("boomer_play_")
+           for block in message.get("blocks", []) for b in block.get("elements", [])):
+        return
+    client.chat_update(channel=channel, ts=message["ts"], blocks=_panel_blocks(player),
+                       text="Boomer Control Panel")
+
+
+def _notify_from_surface(body: dict, client: WebClient, text: str):
+    channel = (body.get("channel") or {}).get("id") or body["user"]["id"]
+    try:
+        client.chat_postMessage(channel=channel, text=text)
+    except Exception:
+        logger.exception("Cannot post notification to %s", channel)
+
+
+def _home_view(player: SoundPlayer) -> dict:
+    header = ":musical_note: *Sons disponibles*"
+    if _last_played:
+        header += f"  |  :arrow_forward: `{_last_played}`"
+
+    blocks: list = _panel_blocks(player)
+    blocks.append({"type": "divider"})
+    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": header}})
+    blocks.extend(_sound_button_blocks(player)[:_MAX_HOME_BLOCKS])
+    blocks.append({
+        "type": "context",
+        "elements": [{"type": "mrkdwn", "text": "`/boomer_v3 play a+b+c --reverse` pour enchaîner"}],
+    })
+    return {"type": "home", "blocks": blocks}
+
+
+def _publish_home(client: WebClient, player: SoundPlayer, user_id: str):
+    try:
+        client.views_publish(user_id=user_id, view=_home_view(player))
+    except Exception:
+        logger.exception("Cannot publish the App Home view")
 
 
 def _cmd_map(say, client: WebClient, player: SoundPlayer, midi: MidiListener, channel: str, user: str, name: str):
@@ -463,12 +537,9 @@ def _cmd_list(say, player: SoundPlayer):
     say(f":musical_note: Sons disponibles :\n{lines}")
 
 
-def _sounds_panel_blocks(player: SoundPlayer, last_played: str | None = None) -> list:
+def _sound_button_blocks(player: SoundPlayer) -> list:
     sounds = player.list_sounds()
-    header = ":musical_note: *Sons disponibles*"
-    if last_played:
-        header += f"  |  :arrow_forward: `{last_played}`"
-    blocks: list = [{"type": "section", "text": {"type": "mrkdwn", "text": header}}]
+    blocks: list = []
     for i in range(0, len(sounds), 5):
         blocks.append({
             "type": "actions",
@@ -483,6 +554,13 @@ def _sounds_panel_blocks(player: SoundPlayer, last_played: str | None = None) ->
             ],
         })
     return blocks
+
+
+def _sounds_panel_blocks(player: SoundPlayer, last_played: str | None = None) -> list:
+    header = ":musical_note: *Sons disponibles*"
+    if last_played:
+        header += f"  |  :arrow_forward: `{last_played}`"
+    return [{"type": "section", "text": {"type": "mrkdwn", "text": header}}] + _sound_button_blocks(player)
 
 
 def _cmd_sounds_panel(say, player: SoundPlayer, channel: str):

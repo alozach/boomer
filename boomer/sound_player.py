@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import os
+import random
 import shutil
 import threading
 import time
@@ -114,6 +115,10 @@ class SoundPlayer:
             while pygame.mixer.get_busy():
                 pygame.time.wait(50)
         return True
+
+    def random_sound(self) -> str | None:
+        sounds = self.list_sounds()
+        return random.choice(sounds) if sounds else None
 
     def list_sounds(self) -> list[str]:
         names = []

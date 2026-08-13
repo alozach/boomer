@@ -60,6 +60,8 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
             say(_usage())
         elif action == "play":
             _cmd_play(say, player, arg)
+        elif action in ("random", "aleatoire", "hasard"):
+            _cmd_random(say, player, arg)
         elif action == "add":
             _cmd_add(say, player, command, arg)
         elif action == "rename":
@@ -144,6 +146,17 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
     def handle_play_button(ack, body, client):
         ack()
         play_from_button(body, client, body["actions"][0]["value"])
+        _refresh_surface(body, client, player)
+
+    @app.action("boomer_random")
+    def handle_action_random(ack, body, client):
+        ack()
+        name = player.random_sound()
+        if name is None:
+            _notify_from_surface(body, client, ":speaker: Aucun son disponible.")
+            return
+        if play_from_button(body, client, name):
+            _notify_from_surface(body, client, f":game_die: Au hasard : `{name}`")
         _refresh_surface(body, client, player)
 
     @app.action("boomer_stop")
@@ -259,6 +272,24 @@ def _cmd_play(say, player: SoundPlayer, arg: str):
     _last_played = names[-1]
 
 
+def _cmd_random(say, player: SoundPlayer, arg: str):
+    global _last_played
+    try:
+        _, effects = audio_effects.parse_effects(arg)
+    except EffectError as e:
+        say(f":x: {e}")
+        return
+    name = player.random_sound()
+    if name is None:
+        say(":speaker: Aucun son disponible pour le moment.")
+        return
+    if not player.play(name, effects):
+        say(f":x: Le fichier `{name}` n'a pas pu être décodé (format audio non reconnu).")
+        return
+    _last_played = name
+    say(f":game_die: Au hasard : `{name}`{audio_effects.describe(effects)}")
+
+
 def _cmd_add(say, player: SoundPlayer, command: dict, name: str):
     if not name:
         say("Usage : `/boomer_v3 add <nom>`")
@@ -329,6 +360,11 @@ def _panel_blocks(player: SoundPlayer) -> list:
                     "type": "button",
                     "text": {"type": "plain_text", "text": "🔊 Vol +"},
                     "action_id": "boomer_vol_up",
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "🎲 Au hasard"},
+                    "action_id": "boomer_random",
                 },
             ],
         },
@@ -739,6 +775,7 @@ def _usage() -> str:
     return (
         "*Commandes disponibles :*\n"
         "• `/boomer_v3 play <nom>[+<nom>…] [effets]` — jouer un son, ou plusieurs à la suite\n"
+        "• `/boomer_v3 random [effets]` — jouer un son au hasard\n"
         f"    _{_EFFECTS_HELP}_\n"
         "• `/boomer_v3 stop` — arrêter la lecture en cours\n"
         "• `/boomer_v3 vol up|down|<0-100>` — régler le volume\n"

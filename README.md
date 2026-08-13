@@ -83,10 +83,11 @@ Puis `make start`.
 | Commande | Effet |
 | --- | --- |
 | `/boomer_v3 play <nom>[+<nom>…] [effets]` | Jouer un son, ou plusieurs à la suite |
+| `/boomer_v3 random [effets]` | Jouer un son au hasard |
 | `/boomer_v3 stop` | Arrêter la lecture en cours |
 | `/boomer_v3 list` | Lister les sons disponibles |
 | `/boomer_v3 sounds` | Panneau interactif, un bouton par son |
-| `/boomer_v3 panel` | Panneau de contrôle (stop, mute, volume) |
+| `/boomer_v3 panel` | Panneau de contrôle (stop, mute, volume, aléatoire) |
 | `/boomer_v3 add <nom>` | Ajouter un son (envoyer ensuite le fichier dans le canal) |
 | `/boomer_v3 rename <ancien> <nouveau>` | Renommer un son (met à jour les mappings MIDI) |
 | `/boomer_v3 delete <nom>` | Supprimer un son |
@@ -102,7 +103,8 @@ Puis `make start`.
 
 ### Effets
 
-`[effets]` désigne partout la même liste de flags, cumulables :
+`[effets]` désigne partout la même liste de flags, cumulables, acceptés aussi bien par
+`play` que par `random` :
 
 | Flag | Effet |
 | --- | --- |
@@ -117,7 +119,7 @@ Sur un enchaînement, les effets s'appliquent à tous les sons :
 ### Onglet Accueil
 
 L'onglet *Accueil* de l'app affiche en permanence le panneau de contrôle (stop, mute,
-volume), puis les boutons de tous les sons. Il se met à jour à chaque ouverture et après
+volume, aléatoire), puis les boutons de tous les sons. Il se met à jour à chaque ouverture et après
 chaque clic, sans avoir à reposter un panneau dans un canal.
 
 ## Exploitation

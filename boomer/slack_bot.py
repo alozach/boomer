@@ -53,6 +53,11 @@ _pending_maps_lock = threading.Lock()
 # Last sound played, shown on the panels and the App Home
 _last_played: str | None = None
 
+# Volume announcements are debounced: holding a MIDI volume key fires one press per step
+_VOLUME_NOTICE_DELAY = 1.5
+_volume_notice_timer: threading.Timer | None = None
+_volume_notice_lock = threading.Lock()
+
 
 def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
                      scheduler: Scheduler, stats: Stats) -> App:
@@ -116,19 +121,7 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
             say(f":x: Commande inconnue : `{action}`\n\n{_usage()}")
 
     def on_midi_volume(action: str, vol: float):
-        info = player.get_panel_info()
-        if not info:
-            return
-        icon = ":loud_sound:" if action == "volume+" else ":sound:"
-
-        def _notify():
-            _refresh_stored_panel(slack_client, player)
-            slack_client.chat_postMessage(
-                channel=info["channel"],
-                text=f"{icon} Volume : {int(vol * 100)} %",
-            )
-
-        threading.Thread(target=_notify, daemon=True).start()
+        _schedule_volume_notice(slack_client, player, action)
 
     midi.set_volume_action_callback(on_midi_volume)
 
@@ -464,6 +457,39 @@ def _refresh_stored_panel(client: WebClient, player: SoundPlayer):
         )
     except Exception:
         player.clear_panel_info()
+
+
+def _schedule_volume_notice(client: WebClient, player: SoundPlayer, action: str):
+    """Announce the volume once a burst of MIDI presses is over, not 2 % at a time."""
+    global _volume_notice_timer
+    with _volume_notice_lock:
+        if _volume_notice_timer is not None:
+            _volume_notice_timer.cancel()
+        _volume_notice_timer = threading.Timer(
+            _VOLUME_NOTICE_DELAY, _post_volume_notice, args=(client, player, action)
+        )
+        _volume_notice_timer.daemon = True
+        _volume_notice_timer.start()
+
+
+def _post_volume_notice(client: WebClient, player: SoundPlayer, action: str):
+    global _volume_notice_timer
+    with _volume_notice_lock:
+        _volume_notice_timer = None
+    _refresh_stored_panel(client, player)
+    info = player.get_panel_info() or player.get_panel_info("sounds_panel")
+    if not info:
+        logger.info("Volume changed from MIDI but no panel channel is known.")
+        return
+    if player.is_muted():
+        text = ":mute: Son coupé."
+    else:
+        icon = ":loud_sound:" if action == "volume+" else ":sound:"
+        text = f"{icon} Volume : {int(player.get_volume() * 100)} %"
+    try:
+        client.chat_postMessage(channel=info["channel"], text=text)
+    except SlackApiError:
+        logger.exception("Cannot post the volume notice")
 
 
 def _refresh_sounds_panel(client: WebClient, player: SoundPlayer):

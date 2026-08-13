@@ -173,6 +173,10 @@ make run        # lancer en avant-plan sans systemd (debug)
 ## Notes
 
 - Le volume par défaut est bas (2 %) : les enceintes visées saturent vite. Il monte par pas de 2 %.
+- Les changements de volume au clavier MIDI sont annoncés dans le canal une fois la rafale
+  terminée (1,5 s sans nouvel appui) : une montée de 2 à 20 % donne un message, pas neuf.
+  L'annonce a besoin d'un canal connu, c'est-à-dire d'un `/boomer_v3 panel` ou `sounds`
+  posté au moins une fois.
 - Les effets sont calculés en mémoire avec numpy : les fichiers d'origine ne sont jamais modifiés.
 - Toute nouvelle lecture (bouton, commande, touche MIDI) interrompt l'enchaînement en cours.
 - `stats.json` est écrit par lots (10 s) pour épargner la carte SD, et à l'arrêt du service.

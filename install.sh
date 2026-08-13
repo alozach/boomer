@@ -18,7 +18,8 @@ sudo apt-get install -y \
     libasound2-dev \
     libportmidi-dev \
     libsdl2-mixer-2.0-0 \
-    libsdl2-2.0-0
+    libsdl2-2.0-0 \
+    ffmpeg
 
 # Accès audio et MIDI
 if ! groups "$CURRENT_USER" | grep -q '\baudio\b'; then

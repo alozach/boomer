@@ -16,7 +16,8 @@ de synthèse ou planifier des lectures automatiques.
   avec un bip de retour sur les touches de volume.
 - **Bot Slack** — commande slash `/boomer_v3` + panneaux interactifs à boutons
   (contrôle du volume, un bouton par son), et un onglet *Accueil* permanent.
-- **Ajout de sons depuis Slack** — `add <nom>` puis dépôt du fichier dans le canal.
+- **Ajout de sons depuis Slack** — `add <nom>` puis dépôt du fichier dans le canal ; le format
+  est reconnu d'après le contenu, et converti en MP3 si pygame ne sait pas le lire.
 - **Synthèse vocale** — [edge-tts](https://github.com/rany2/edge-tts), voix neuronales,
   26 langues, vitesse réglable, déclenchable sur n'importe quel message via un raccourci.
 - **Planification** — jouer un son à une heure donnée, tous les jours ou sur des jours choisis.
@@ -53,7 +54,7 @@ cd boomer
 make install
 ```
 
-[install.sh](install.sh) installe les dépendances système (ALSA, portmidi, SDL2), crée le
+[install.sh](install.sh) installe les dépendances système (ALSA, portmidi, SDL2, ffmpeg), crée le
 virtualenv `.venv`, installe les dépendances Python, ajoute l'utilisateur au groupe `audio`,
 copie `.env.example` vers `.env` et crée le service systemd `boomer` activé au boot.
 
@@ -182,6 +183,11 @@ make run        # lancer en avant-plan sans systemd (debug)
 - `stats.json` est écrit par lots (10 s) pour épargner la carte SD, et à l'arrêt du service.
 - La synthèse vocale passe par les serveurs Microsoft Edge : sans réseau, `tts` échoue
   (l'erreur est loguée, le reste continue de fonctionner).
+- L'extension d'un fichier envoyé n'est jamais prise au mot : le format est déterminé par
+  l'en-tête du fichier, puis vérifié en le faisant charger par le mixer. Un enregistrement
+  iPhone ou macOS nommé `.mp3` mais réellement encapsulé en QuickTime est converti par
+  `ffmpeg` ; sans `ffmpeg`, l'ajout est refusé avec un message explicite plutôt que de créer
+  un fichier injouable.
 - Les noms de sons peuvent contenir des espaces. Pour `rename`, la partie la plus longue qui
   correspond à un son existant est prise comme ancien nom ; en cas de doute, entourer les deux
   noms de guillemets : `/boomer_v3 rename "mon son" "nouveau nom"`.

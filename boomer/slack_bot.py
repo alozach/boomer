@@ -3,6 +3,8 @@ import logging
 import os
 import re
 import shlex
+import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -12,7 +14,8 @@ from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from boomer import audio_effects
 from boomer.audio_effects import EffectError
-from boomer.sound_player import SoundPlayer, MIDI_ACTIONS
+from boomer.sound_player import (SoundPlayer, MIDI_ACTIONS, SUPPORTED_EXTENSIONS,
+                                 can_decode, sniff_extension)
 from boomer.stats import Stats, ACTOR_MIDI, ACTOR_SCHEDULE
 from boomer.tts_engine import TtsEngine, LANG_MAP
 from boomer.midi_listener import MidiListener
@@ -1017,6 +1020,65 @@ def _cmd_volume(say, player: SoundPlayer, arg: str):
         say("Usage : `/boomer_v3 volume up|down|<0-100>`")
 
 
+def _pick_extension(file_info: dict, content: bytes) -> str | None:
+    """Trust the bytes, never the name: Slack labels unrecognised uploads 'binary',
+    and a QuickTime container happily calls itself .mp3."""
+    sniffed = sniff_extension(content)
+    if sniffed:
+        return sniffed
+    # Unknown header: only keep a claimed extension if the mixer can really decode it
+    named = os.path.splitext(file_info.get("name", ""))[1].lower()
+    claimed = f".{file_info.get('filetype', '').lower()}"
+    for candidate in (named, claimed):
+        if candidate in SUPPORTED_EXTENSIONS and _is_decodable(content, candidate):
+            return candidate
+    return None
+
+
+def _is_decodable(content: bytes, ext: str) -> bool:
+    with tempfile.NamedTemporaryFile(suffix=ext) as probe:
+        probe.write(content)
+        probe.flush()
+        return can_decode(probe.name)
+
+
+def _convert_to_mp3(content: bytes) -> bytes | None:
+    """Re-encode a container pygame cannot read (QuickTime, MP4…), if ffmpeg is around."""
+    if shutil.which("ffmpeg") is None:
+        return None
+    with tempfile.TemporaryDirectory() as workdir:
+        src = os.path.join(workdir, "upload")
+        dst = os.path.join(workdir, "converted.mp3")
+        with open(src, "wb") as f:
+            f.write(content)
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", src,
+                 "-vn", "-c:a", "libmp3lame", "-q:a", "4", dst],
+                capture_output=True, timeout=120,
+            )
+        except (subprocess.SubprocessError, OSError):
+            logger.exception("ffmpeg failed on the uploaded file")
+            return None
+        if result.returncode != 0 or not os.path.exists(dst):
+            logger.warning("ffmpeg rejected the upload: %s", result.stderr[:300].decode(errors="replace"))
+            return None
+        with open(dst, "rb") as f:
+            return f.read()
+
+
+def _unsupported_upload_message(content: bytes) -> str:
+    accepted = ", ".join(f"`{e}`" for e in sorted(SUPPORTED_EXTENSIONS))
+    if content[4:8] == b"ftyp":
+        return (
+            ":x: Ce fichier est un conteneur MP4/QuickTime, pas un vrai MP3 : "
+            "son extension est trompeuse et pygame ne sait pas le lire.\n"
+            "Convertis-le avant de l'envoyer (`ffmpeg -i fichier.mp3 -c:a libmp3lame converti.mp3`), "
+            "ou installe `ffmpeg` sur le Pi pour que Boomer le fasse tout seul."
+        )
+    return f":x: Format audio non reconnu. Formats acceptés : {accepted}"
+
+
 def _download_and_save(say, player: SoundPlayer, name: str, file_info: dict, overwrite: bool):
     if name.startswith("__overwrite__"):
         name = name[len("__overwrite__"):]
@@ -1027,9 +1089,6 @@ def _download_and_save(say, player: SoundPlayer, name: str, file_info: dict, ove
         say(":x: Impossible de récupérer l'URL du fichier.")
         return
 
-    filetype = file_info.get("filetype", "").lower()
-    ext = f".{filetype}" if filetype else os.path.splitext(file_info.get("name", ""))[1]
-
     token = os.environ["SLACK_BOT_TOKEN"]
     try:
         resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
@@ -1038,8 +1097,18 @@ def _download_and_save(say, player: SoundPlayer, name: str, file_info: dict, ove
         say(f":x: Échec du téléchargement : {e}")
         return
 
+    content = resp.content
+    ext = _pick_extension(file_info, content)
+    if ext is None:
+        converted = _convert_to_mp3(content)
+        if converted is None:
+            say(_unsupported_upload_message(content))
+            return
+        say(":arrows_counterclockwise: Format exotique converti en MP3.")
+        content, ext = converted, ".mp3"
+
     with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as f:
-        f.write(resp.content)
+        f.write(content)
         tmp_path = f.name
 
     try:

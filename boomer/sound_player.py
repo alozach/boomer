@@ -19,6 +19,34 @@ MAX_VOLUME = 1.0
 MIDI_ACTIONS = {"volume+", "volume-"}
 
 
+def can_decode(path: str) -> bool:
+    """The final say on a file: whatever its name, can the mixer actually load it?"""
+    try:
+        pygame.mixer.Sound(path)
+        return True
+    except pygame.error:
+        return False
+
+
+def sniff_extension(data: bytes) -> str | None:
+    """Identify an audio container from its header, whatever the file claims to be.
+
+    Slack reports filetype 'binary' for anything it does not recognise, and uploads
+    are routinely misnamed, so the bytes are the only trustworthy source.
+    """
+    if data[:3] == b"ID3" or (len(data) > 1 and data[0] == 0xFF and data[1] & 0xE0 == 0xE0):
+        return ".mp3"
+    if data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        return ".wav"
+    if data[:4] == b"OggS":
+        return ".ogg"
+    if data[:4] == b"fLaC":
+        return ".flac"
+    if data[:4] == b"FORM" and data[8:12] in (b"AIFF", b"AIFC"):
+        return ".aiff"
+    return None
+
+
 class SoundPlayer:
     def __init__(self, sounds_dir: str, config_path: str):
         self.sounds_dir = sounds_dir

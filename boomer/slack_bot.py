@@ -2,6 +2,7 @@ import datetime
 import logging
 import os
 import re
+import shlex
 import tempfile
 import threading
 import time
@@ -397,12 +398,35 @@ def _cmd_add(say, player: SoundPlayer, command: dict, name: str):
         say(f":inbox_tray: Prêt à ajouter `{name}`. Envoie maintenant le fichier audio dans ce canal.")
 
 
+def _split_rename(player: SoundPlayer, arg: str) -> tuple[str, str] | None:
+    """Tell both names apart even when they contain spaces.
+
+    Quotes win (`rename "mon son" "nouveau nom"`); otherwise the longest leading
+    part that matches an existing sound is taken as the old name.
+    """
+    try:
+        quoted = shlex.split(arg)
+    except ValueError:
+        quoted = []
+    if len(quoted) == 2:
+        return quoted[0], quoted[1]
+
+    parts = arg.split()
+    if len(parts) < 2:
+        return None
+    for i in range(len(parts) - 1, 0, -1):
+        if player.sound_exists(" ".join(parts[:i])):
+            return " ".join(parts[:i]), " ".join(parts[i:])
+    return parts[0], " ".join(parts[1:])
+
+
 def _cmd_rename(say, player: SoundPlayer, arg: str):
-    parts = arg.split(maxsplit=1)
-    if len(parts) != 2:
-        say("Usage : `/boomer_v3 rename <ancien-nom> <nouveau-nom>`")
+    names = _split_rename(player, arg)
+    if names is None:
+        say('Usage : `/boomer_v3 rename <ancien-nom> <nouveau-nom>`\n'
+            '_Avec des espaces : `/boomer_v3 rename "mon son" "nouveau nom"`_')
         return
-    old_name, new_name = parts
+    old_name, new_name = names
     if not player.sound_exists(old_name):
         closest = player.find_closest_sound(old_name)
         if closest:
@@ -1040,7 +1064,8 @@ def _usage() -> str:
         "• `/boomer_v3 vol up|down|<0-100>` — régler le volume\n"
         "• `/boomer_v3 list` — lister les sons disponibles\n"
         "• `/boomer_v3 add <nom>` — ajouter un son (puis envoyer le fichier)\n"
-        "• `/boomer_v3 rename <ancien> <nouveau>` — renommer un son\n"
+        "• `/boomer_v3 rename <ancien> <nouveau>` — renommer un son "
+        "(guillemets si le nom contient des espaces)\n"
         "• `/boomer_v3 map <nom>` — assigner un son à une touche MIDI (interactif)\n"
         "• `/boomer_v3 delete <nom>` — supprimer un son\n"
         "• `/boomer_v3 panel` — afficher le panneau de contrôle interactif\n"

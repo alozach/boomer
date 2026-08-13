@@ -182,6 +182,9 @@ make run        # lancer en avant-plan sans systemd (debug)
 - `stats.json` est écrit par lots (10 s) pour épargner la carte SD, et à l'arrêt du service.
 - La synthèse vocale passe par les serveurs Microsoft Edge : sans réseau, `tts` échoue
   (l'erreur est loguée, le reste continue de fonctionner).
+- Les noms de sons peuvent contenir des espaces. Pour `rename`, la partie la plus longue qui
+  correspond à un son existant est prise comme ancien nom ; en cas de doute, entourer les deux
+  noms de guillemets : `/boomer_v3 rename "mon son" "nouveau nom"`.
 - Sans clavier MIDI branché au démarrage, l'écoute MIDI est simplement désactivée
   (un avertissement est logué) ; le bot Slack reste pleinement fonctionnel.
 - Les appels à l'API Slack (rafraîchissement des panneaux, notifications) partent en

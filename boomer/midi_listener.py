@@ -40,16 +40,25 @@ class MidiListener:
 
         hardware = [p for p in available if "Midi Through" not in p]
         port_name = (hardware or available)[0]
-        logger.info("Opening MIDI port: %s", port_name)
+        logger.info("MIDI ports available: %s", available)
+        logger.info("Opening MIDI port '%s' with %d mapping(s)",
+                    port_name, len(self.player.get_midi_mapping()))
 
-        with mido.open_input(port_name) as port:
-            while self._running:
-                msg = port.receive(block=False)
-                if msg is None:
-                    time.sleep(0.005)
-                    continue
-                if msg.type == "note_on" and msg.velocity > 0:
-                    self._handle_note(msg.note)
+        try:
+            with mido.open_input(port_name) as port:
+                while self._running:
+                    msg = port.receive(block=False)
+                    if msg is None:
+                        time.sleep(0.005)
+                        continue
+                    logger.debug("MIDI message: %s", msg)
+                    if msg.type == "note_on" and msg.velocity > 0:
+                        self._handle_note(msg.note)
+        except Exception:
+            # Without this the thread dies quietly and MIDI stops for good
+            logger.exception("MIDI listener crashed on port '%s'", port_name)
+            raise
+        logger.info("MIDI listener stopped.")
 
     def stop(self):
         self._running = False
@@ -57,11 +66,14 @@ class MidiListener:
     def _handle_note(self, note: int):
         if self._note_interceptor is not None:
             if self._note_interceptor(note):
+                logger.info("Note %d intercepted by an ongoing assignment", note)
                 return
         mappings = self.player.get_midi_mapping()
         name = mappings.get(note)
         if name is None:
+            logger.info("Note %d pressed but mapped to nothing", note)
             return
+        logger.info("Note %d -> '%s'", note, name)
         if name in MIDI_ACTIONS:
             if name == "volume+":
                 vol = self.player.volume_up()

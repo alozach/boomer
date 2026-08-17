@@ -81,6 +81,8 @@ class Scheduler:
             self._arm(schedule_id)
 
         delay = self._next_delay(sched["hour"], sched["minute"], sched.get("days"))
+        logger.info("Schedule %s ('%s' at %s) armed, firing in %.0f min",
+                    schedule_id, sched["sound"], sched["time"], delay / 60)
         timer = threading.Timer(delay, fire)
         timer.daemon = True
         self._timers[schedule_id] = timer

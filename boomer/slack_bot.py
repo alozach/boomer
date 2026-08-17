@@ -51,6 +51,26 @@ _SLOW_REQUEST_SECONDS = 1.0
 def _note_name(note: int) -> str:
     return f"{_NOTE_NAMES[note % 12]}{(note // 12) - 1}"
 
+
+def _describe_request(body: dict) -> str:
+    """One-line summary of an incoming Slack payload, whatever its shape."""
+    user = (body.get("user") or {}).get("id") or body.get("user_id") or "?"
+    if body.get("command"):
+        return f"command {body['command']} {body.get('text', '')!r} from {user}"
+    actions = body.get("actions") or []
+    if actions:
+        surface = "App Home" if _is_home(body) else "message"
+        return (f"action {actions[0].get('action_id')} value={actions[0].get('value')!r} "
+                f"from {user} on the {surface}")
+    if body.get("type") == "shortcut" or body.get("callback_id"):
+        return f"shortcut {body.get('callback_id')} from {user}"
+    event = body.get("event") or {}
+    if event:
+        files = event.get("files") or []
+        extra = f" with {len(files)} file(s)" if files else ""
+        return f"event {event.get('type')} from {event.get('user') or user}{extra}"
+    return f"{body.get('type', 'unknown')} from {user}"
+
 # (channel_id, user_id) -> sound name waiting for a file upload
 _pending_additions: dict[tuple[str, str], str] = {}
 
@@ -77,8 +97,10 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
     slack_client = WebClient(token=os.environ["SLACK_BOT_TOKEN"])
 
     @app.middleware
-    def log_slow_requests(body, next):
-        """Split the blame for a late message: Slack delivery lag vs. our own handling time."""
+    def log_requests(body, next):
+        """Trace what Slack sends us, then split the blame for a late message:
+        Slack delivery lag vs. our own handling time."""
+        logger.info("Slack request: %s", _describe_request(body))
         started = time.monotonic()
         try:
             next()
@@ -98,6 +120,8 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
     def handle_boomer(ack, command, say):
         ack()
         text = command.get("text", "").strip()
+        logger.info("Command from %s in %s: /boomer_v3 %s",
+                    command.get("user_id"), command.get("channel_id"), text or "(no argument)")
         parts = text.split(maxsplit=1)
         action = parts[0].lower() if parts else ""
         arg = parts[1].strip().strip("`") if len(parts) > 1 else ""
@@ -157,6 +181,7 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
         stats.record(name, ACTOR_MIDI)
         info = player.get_panel_info() or player.get_panel_info("sounds_panel")
         if not info:
+            logger.info("MIDI played '%s' but no panel channel is known: nothing announced", name)
             return
         def _notify():
             slack_client.chat_postMessage(
@@ -245,6 +270,7 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
         stats.record(sound, ACTOR_SCHEDULE)
         info = player.get_panel_info() or player.get_panel_info("sounds_panel")
         if not info:
+            logger.info("Schedule played '%s' but no panel channel is known: nothing announced", sound)
             return
         def _notify():
             slack_client.chat_postMessage(
@@ -265,10 +291,13 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
 
         key = (channel, user)
         if key not in _pending_additions:
+            logger.info("File from %s in %s ignored: no pending `add`", user, channel)
             return
 
         name = _pending_additions.pop(key)
         file_info = files[0]
+        logger.info("Receiving '%s' for sound '%s' (filetype=%s)",
+                    file_info.get("name"), name, file_info.get("filetype"))
         _download_and_save(say, player, name, file_info, overwrite=False)
 
     _start_weekly_recap(slack_client, player, stats)
@@ -505,6 +534,7 @@ def _refresh_stored_panel(client: WebClient, player: SoundPlayer):
             text="Boomer Control Panel",
         )
     except Exception:
+        logger.exception("Cannot refresh the control panel in %s, forgetting it", info["channel"])
         player.clear_panel_info()
 
 
@@ -564,6 +594,7 @@ def _refresh_sounds_panel(client: WebClient, player: SoundPlayer):
             text="Sons disponibles",
         )
     except Exception:
+        logger.exception("Cannot refresh the sounds panel in %s, forgetting it", info["channel"])
         player.clear_panel_info("sounds_panel")
 
 

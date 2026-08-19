@@ -258,7 +258,7 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
             return
         stats.record("tts", shortcut["user"]["id"])
         threading.Thread(target=tts.speak, args=(text, None), daemon=True).start()
-        _announce_speak(client, respond, shortcut, text)
+        _announce_speak(client, respond, player, shortcut, text)
 
     @app.event("app_home_opened")
     def handle_home_opened(event, client):
@@ -973,11 +973,18 @@ _EMOJI_RE = re.compile(r":[a-z0-9_+-]+:")
 _MAX_SPEAK_CHARS = 300
 
 
-def _announce_speak(client: WebClient, respond, shortcut: dict, text: str):
-    """Tell the channel what was read aloud, or fall back to the caller if Boomer is not a member."""
+def _announce_speak(client: WebClient, respond, player: SoundPlayer, shortcut: dict, text: str):
+    """Announce in the panel channel, where the soundboard activity is followed.
+
+    The shortcut fires from any message, often far from that channel, so the
+    message it came from is only a fallback, and the caller alone the last resort.
+    """
     user = shortcut["user"]["id"]
-    channel = (shortcut.get("channel") or {}).get("id")
-    if channel:
+    info = player.get_panel_info() or player.get_panel_info("sounds_panel")
+    origin = (shortcut.get("channel") or {}).get("id")
+    # dict.fromkeys keeps the order and drops the duplicate when both are the same channel
+    targets = [c for c in dict.fromkeys([info["channel"] if info else None, origin]) if c]
+    for channel in targets:
         try:
             client.chat_postMessage(
                 channel=channel,
@@ -985,8 +992,10 @@ def _announce_speak(client: WebClient, respond, shortcut: dict, text: str):
             )
             return
         except SlackApiError as e:
-            # Typically not_in_channel: the shortcut works everywhere, posting does not
-            logger.info("Cannot announce in %s (%s), answering privately", channel, e)
+            # not_in_channel / channel_not_found: the shortcut works everywhere, posting does not
+            logger.info("Cannot announce in %s (%s)", channel, e)
+    logger.info("Nowhere to announce the TTS (tried %s), answering %s privately",
+                targets or "no channel", user)
     respond(f":speaking_head_in_silhouette: Lecture à voix haute de « {text} »")
 
 

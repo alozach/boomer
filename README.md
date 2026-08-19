@@ -143,12 +143,13 @@ panneau enregistré.
 ### Lire un message à voix haute
 
 Le menu *Plus d'actions* (⋮) de n'importe quel message propose « Lire à voix haute » : le
-texte du message part dans la synthèse vocale, et Boomer annonce dans le canal qui a fait
-lire quoi.
+texte du message part dans la synthèse vocale, et Boomer annonce qui a fait lire quoi dans
+le canal du dernier panneau enregistré — l'activité de la soundboard reste ainsi regroupée
+au même endroit, même quand le message lu vient d'ailleurs.
 
 Le raccourci fonctionne dans tous les canaux du workspace, y compris ceux où le bot n'est
-pas invité — mais il ne peut alors pas y poster : la confirmation est dans ce cas visible
-de la seule personne qui l'a déclenché.
+pas invité. Faute de panneau connu, l'annonce part dans le canal d'origine du message ; si
+Boomer n'y est pas invité non plus, elle n'est visible que de la personne qui l'a déclenché.
 
 Le markup Slack (mentions, liens, emojis, citations) est nettoyé avant lecture, et le texte
 est tronqué à 300 caractères.

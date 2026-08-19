@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_EXTENSIONS = {".wav", ".mp3", ".ogg", ".flac", ".aiff"}
 MAX_VOLUME = 1.0
+DEFAULT_VOLUME = 0.15
 MIDI_ACTIONS = {"volume+", "volume-"}
 
 # Above this, waiting for the playback lock means someone else is holding it too long
@@ -137,9 +138,9 @@ class SoundPlayer:
 
         os.makedirs(sounds_dir, exist_ok=True)
         self._config = self._load_config()
-        self._current_volume: float = 0.02
+        self._current_volume: float = DEFAULT_VOLUME
         self._muted: bool = False
-        self._volume_before_mute: float = 0.02
+        self._volume_before_mute: float = DEFAULT_VOLUME
         # Bumped on every new playback so a running sequence knows it has been superseded
         self._playback_token: int = 0
         logger.info(

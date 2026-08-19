@@ -84,11 +84,16 @@ def _warn_if_inaudible(label: str, delay: float = 0.25):
     def check():
         time.sleep(delay)
         states = _alsa_playback_states()
-        if states and not any("RUNNING" in s for s in states):
-            logger.warning(
-                "Started %s but no ALSA stream is running: nothing is audible (%s)",
-                label, "; ".join(states),
-            )
+        running = [s for s in states if "RUNNING" in s]
+        if not states:
+            logger.warning("Started %s but the kernel exposes no ALSA playback stream at all: "
+                           "SDL is not feeding any card", label)
+        elif not running:
+            logger.warning("Started %s but no ALSA stream is running: nothing is audible (%s)",
+                           label, "; ".join(states))
+        else:
+            # The card is really playing: look downstream (mixer, amp, cable, wrong output)
+            logger.info("ALSA is playing %s on %s", label, ", ".join(running))
 
     threading.Thread(target=check, daemon=True, name="audible-check").start()
 

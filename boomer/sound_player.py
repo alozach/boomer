@@ -77,6 +77,11 @@ def _alsa_playback_states() -> list[str]:
     return states
 
 
+def _by(actor: str | None) -> str:
+    """Log suffix naming whoever asked for the action."""
+    return f" [{actor}]" if actor else ""
+
+
 def _warn_if_inaudible(label: str, delay: float = 0.25):
     """A playback that no ALSA stream backs is the silent failure: report it.
 
@@ -185,7 +190,7 @@ class SoundPlayer:
         pygame.mixer.stop()
         return self._playback_token
 
-    def _play_path(self, path: str, effects: dict | None):
+    def _play_path(self, path: str, effects: dict | None, actor: str | None = None):
         """Load, transform and start a file. Returns (channel, sound) or None. Caller holds the lock."""
         try:
             sound = pygame.mixer.Sound(path)
@@ -202,25 +207,26 @@ class SoundPlayer:
             logger.error("No free mixer channel for %s: nothing will be audible", path)
         else:
             logger.info(
-                "Playing %s (%.1f s) at %d %%%s",
+                "Playing %s (%.1f s) at %d %%%s%s",
                 os.path.basename(path), sound.get_length(), int(self._current_volume * 100),
-                f" with effects {effects}" if effects else "",
+                f" with effects {effects}" if effects else "", _by(actor),
             )
             _warn_if_inaudible(os.path.basename(path))
         if self._muted:
             logger.warning("Sound is muted: %s will not be audible", os.path.basename(path))
         return channel, sound
 
-    def play(self, name: str, effects: dict | None = None) -> bool:
+    def play(self, name: str, effects: dict | None = None, actor: str | None = None) -> bool:
         path = self._find_sound_file(name)
         if path is None:
             logger.warning("Sound '%s' has no file in %s", name, self.sounds_dir)
             return False
         with self._playback_lock(f"playing '{name}'"):
             self._start_playback()
-            return self._play_path(path, effects) is not None
+            return self._play_path(path, effects, actor) is not None
 
-    def play_sequence(self, names: list[str], effects: dict | None = None) -> bool:
+    def play_sequence(self, names: list[str], effects: dict | None = None,
+                      actor: str | None = None) -> bool:
         """Play sounds back to back in a background thread. Any new playback interrupts it."""
         paths = [p for p in (self._find_sound_file(n) for n in names) if p is not None]
         if not paths:
@@ -231,18 +237,19 @@ class SoundPlayer:
         with self._playback_lock(f"playing a sequence of {len(paths)} sounds"):
             token = self._start_playback()
         thread = threading.Thread(
-            target=self._run_sequence, args=(paths, effects, token), daemon=True, name="sequence"
+            target=self._run_sequence, args=(paths, effects, token, actor), daemon=True, name="sequence"
         )
         thread.start()
         return True
 
-    def _run_sequence(self, paths: list[str], effects: dict | None, token: int):
+    def _run_sequence(self, paths: list[str], effects: dict | None, token: int,
+                      actor: str | None = None):
         for path in paths:
             with self._playback_lock("the next sound of the sequence"):
                 if token != self._playback_token:
                     logger.info("Sequence interrupted by a newer playback")
                     return
-                started = self._play_path(path, effects)
+                started = self._play_path(path, effects, actor)
             if started is None:
                 continue
             channel, sound = started
@@ -253,11 +260,11 @@ class SoundPlayer:
                     return
                 time.sleep(0.02)
 
-    def play_file(self, path: str) -> bool:
+    def play_file(self, path: str, actor: str | None = None) -> bool:
         """Play a one-off file (TTS) and wait for the end, holding the lock throughout."""
         with self._playback_lock(f"playing the file {os.path.basename(path)}"):
             self._start_playback()
-            started = self._play_path(path, None)
+            started = self._play_path(path, None, actor)
             if started is None:
                 return False
             _, sound = started
@@ -363,33 +370,33 @@ class SoundPlayer:
     def get_volume(self) -> float:
         return self._current_volume
 
-    def set_volume(self, level: float):
+    def set_volume(self, level: float, actor: str | None = None):
         # pygame.mixer.Sound.set_volume is per-instance; store level to apply on future playback calls
         previous = self._current_volume
         self._current_volume = max(0.0, min(MAX_VOLUME, level))
-        logger.info("Volume %d %% -> %d %% (requested %d %%, applies to the next playback)",
-                    int(previous * 100), int(self._current_volume * 100), int(level * 100))
+        logger.info("Volume %d %% -> %d %% (requested %d %%, applies to the next playback)%s",
+                    int(previous * 100), int(self._current_volume * 100), int(level * 100), _by(actor))
 
-    def volume_up(self, step: float = 0.02) -> float:
+    def volume_up(self, step: float = 0.02, actor: str | None = None) -> float:
         new_vol = min(MAX_VOLUME, self._current_volume + step)
-        self.set_volume(new_vol)
+        self.set_volume(new_vol, actor)
         return new_vol
 
-    def volume_down(self, step: float = 0.02) -> float:
+    def volume_down(self, step: float = 0.02, actor: str | None = None) -> float:
         new_vol = max(0.0, self._current_volume - step)
-        self.set_volume(new_vol)
+        self.set_volume(new_vol, actor)
         return new_vol
 
-    def mute(self):
+    def mute(self, actor: str | None = None):
         self._volume_before_mute = self._current_volume
         self._muted = True
         self._current_volume = 0.0
-        logger.info("Muted (volume was %d %%)", int(self._volume_before_mute * 100))
+        logger.info("Muted (volume was %d %%)%s", int(self._volume_before_mute * 100), _by(actor))
 
-    def unmute(self) -> float:
+    def unmute(self, actor: str | None = None) -> float:
         self._muted = False
         self._current_volume = self._volume_before_mute
-        logger.info("Unmuted at %d %%", int(self._current_volume * 100))
+        logger.info("Unmuted at %d %%%s", int(self._current_volume * 100), _by(actor))
         return self._current_volume
 
     def beep(self, frequency: int = 800, duration: float = 0.08):
@@ -412,7 +419,7 @@ class SoundPlayer:
         sound.set_volume(self._current_volume)
         sound.play()
 
-    def stop(self):
+    def stop(self, actor: str | None = None):
         with self._playback_lock("stopping the playback"):
-            logger.info("Playback stopped")
+            logger.info("Playback stopped%s", _by(actor))
             self._start_playback()

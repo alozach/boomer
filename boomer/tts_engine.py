@@ -65,10 +65,11 @@ class TtsEngine:
         self._rate = max(50, min(400, rate))
         return self._rate
 
-    def speak(self, text: str, lang: str | None = None):
+    def speak(self, text: str, lang: str | None = None, actor: str | None = None):
         voice, _ = LANG_MAP.get((lang or DEFAULT_LANG).lower(), LANG_MAP[DEFAULT_LANG])
         rate_str = _rate_to_pct(self._rate)
-        logger.info("TTS request: voice=%s rate=%s, %d chars", voice, rate_str, len(text))
+        logger.info("TTS request: voice=%s rate=%s, %d chars%s", voice, rate_str, len(text),
+                    f" from {actor}" if actor else "")
         with self._lock:
             tmp_path = None
             try:
@@ -77,7 +78,7 @@ class TtsEngine:
                 communicate = edge_tts.Communicate(text, voice, rate=rate_str)
                 asyncio.run(communicate.save(tmp_path))
                 logger.info("TTS synthesised %d bytes, playing it", os.path.getsize(tmp_path))
-                self.player.play_file(tmp_path)
+                self.player.play_file(tmp_path, actor)
             except Exception:
                 logger.exception("TTS failed for text: %s", text)
             finally:

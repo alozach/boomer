@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Callable
 
 from boomer.sound_player import SoundPlayer
+from boomer.stats import ACTOR_SCHEDULE
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,7 @@ class Scheduler:
 
         def fire():
             logger.info("Scheduled sound: %s", sched["sound"])
-            self._player.play(sched["sound"])
+            self._player.play(sched["sound"], actor=ACTOR_SCHEDULE)
             if self._on_fire:
                 self._on_fire(schedule_id, sched["sound"])
             self._arm(schedule_id)

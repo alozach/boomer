@@ -52,23 +52,57 @@ def _note_name(note: int) -> str:
     return f"{_NOTE_NAMES[note % 12]}{(note // 12) - 1}"
 
 
-def _describe_request(body: dict) -> str:
+# Slack user IDs -> display names, to keep the logs readable
+_user_names: dict[str, str] = {}
+
+
+def _remember_user(body: dict) -> None:
+    """Interactive payloads carry the name along with the ID: cache it for free."""
+    user = body.get("user")
+    if isinstance(user, dict):
+        user_id, name = user.get("id"), user.get("username") or user.get("name")
+    else:
+        user_id, name = body.get("user_id"), body.get("user_name")
+    if user_id and name:
+        _user_names.setdefault(user_id, name)
+
+
+def _user_label(user_id: str, client: WebClient | None = None) -> str:
+    """Name and ID of a Slack user, looked up once then cached."""
+    if not user_id:
+        return "?"
+    name = _user_names.get(user_id)
+    if name is None and client is not None:
+        try:
+            profile = client.users_info(user=user_id)["user"]
+            name = (profile.get("profile") or {}).get("display_name") or profile.get("real_name")
+        except SlackApiError as exc:
+            logger.debug("Cannot resolve user %s: %s", user_id, exc)
+        # Cache the failure too, so a lookup is never retried on every request
+        name = _user_names.setdefault(user_id, name or "")
+    return f"{name} ({user_id})" if name else user_id
+
+
+def _describe_request(body: dict, client: WebClient | None = None) -> str:
     """One-line summary of an incoming Slack payload, whatever its shape."""
-    user = (body.get("user") or {}).get("id") or body.get("user_id") or "?"
+    _remember_user(body)
+    event = body.get("event") or {}
+    user_id = ((body.get("user") or {}).get("id") if isinstance(body.get("user"), dict)
+               else body.get("user")) or body.get("user_id") or event.get("user")
+    user = _user_label(user_id, client)
     if body.get("command"):
         return f"command {body['command']} {body.get('text', '')!r} from {user}"
     actions = body.get("actions") or []
     if actions:
-        surface = "App Home" if _is_home(body) else "message"
+        surface = "App Home" if _is_home(body) else "message panel"
         return (f"action {actions[0].get('action_id')} value={actions[0].get('value')!r} "
                 f"from {user} on the {surface}")
     if body.get("type") == "shortcut" or body.get("callback_id"):
         return f"shortcut {body.get('callback_id')} from {user}"
-    event = body.get("event") or {}
     if event:
         files = event.get("files") or []
         extra = f" with {len(files)} file(s)" if files else ""
-        return f"event {event.get('type')} from {event.get('user') or user}{extra}"
+        return f"event {event.get('type')} from {user}{extra}"
     return f"{body.get('type', 'unknown')} from {user}"
 
 # (channel_id, user_id) -> sound name waiting for a file upload
@@ -97,10 +131,10 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
     slack_client = WebClient(token=os.environ["SLACK_BOT_TOKEN"])
 
     @app.middleware
-    def log_requests(body, next):
+    def log_requests(body, client, next):
         """Trace what Slack sends us, then split the blame for a late message:
         Slack delivery lag vs. our own handling time."""
-        logger.info("Slack request: %s", _describe_request(body))
+        logger.info("Slack request: %s", _describe_request(body, client))
         started = time.monotonic()
         try:
             next()
@@ -120,8 +154,9 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
     def handle_boomer(ack, command, say):
         ack()
         text = command.get("text", "").strip()
+        actor = _user_label(command.get("user_id"), slack_client)
         logger.info("Command from %s in %s: /boomer_v3 %s",
-                    command.get("user_id"), command.get("channel_id"), text or "(no argument)")
+                    actor, command.get("channel_id"), text or "(no argument)")
         parts = text.split(maxsplit=1)
         action = parts[0].lower() if parts else ""
         arg = parts[1].strip().strip("`") if len(parts) > 1 else ""
@@ -151,19 +186,19 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
         elif action == "panel":
             _cmd_panel(say, player, command["channel_id"])
         elif action == "stop":
-            player.stop()
+            player.stop(actor)
             say(":black_square_for_stop: Lecture arrêtée.")
             _refresh_stored_panel(slack_client, player)
         elif action == "mute":
-            player.mute()
+            player.mute(actor)
             say(":mute: Son coupé.")
             _refresh_stored_panel(slack_client, player)
         elif action == "unmute":
-            vol = player.unmute()
+            vol = player.unmute(actor)
             say(f":loud_sound: Son rétabli à {int(vol * 100)} %.")
             _refresh_stored_panel(slack_client, player)
         elif action in ("volume", "vol"):
-            _cmd_volume(say, player, arg)
+            _cmd_volume(say, player, arg, actor)
             _refresh_stored_panel(slack_client, player)
         elif action == "schedule":
             _cmd_schedule(say, scheduler, player, arg)
@@ -194,7 +229,7 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
 
     def play_from_button(body, client, sound_name: str) -> bool:
         global _last_played
-        if not player.play(sound_name):
+        if not player.play(sound_name, actor=_user_label(body["user"]["id"], client)):
             _in_background(
                 _notify_from_surface, body, client,
                 f":x: Le fichier `{sound_name}` n'a pas pu être décodé (format audio non reconnu).",
@@ -225,28 +260,29 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
     @app.action("boomer_stop")
     def handle_action_stop(ack, body, client):
         ack()
-        player.stop()
+        player.stop(_user_label(body["user"]["id"], client))
         _in_background(_refresh_surface, body, client, player, stats)
 
     @app.action("boomer_mute_toggle")
     def handle_action_mute_toggle(ack, body, client):
         ack()
+        actor = _user_label(body["user"]["id"], client)
         if player.is_muted():
-            player.unmute()
+            player.unmute(actor)
         else:
-            player.mute()
+            player.mute(actor)
         _in_background(_refresh_surface, body, client, player, stats)
 
     @app.action("boomer_vol_down")
     def handle_action_vol_down(ack, body, client):
         ack()
-        player.volume_down()
+        player.volume_down(actor=_user_label(body["user"]["id"], client))
         _in_background(_refresh_surface, body, client, player, stats)
 
     @app.action("boomer_vol_up")
     def handle_action_vol_up(ack, body, client):
         ack()
-        player.volume_up()
+        player.volume_up(actor=_user_label(body["user"]["id"], client))
         _in_background(_refresh_surface, body, client, player, stats)
 
     @app.shortcut("boomer_speak")
@@ -257,7 +293,8 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
             respond(":x: Ce message ne contient pas de texte à lire.")
             return
         stats.record("tts", shortcut["user"]["id"])
-        threading.Thread(target=tts.speak, args=(text, None), daemon=True).start()
+        actor = _user_label(shortcut["user"]["id"], client)
+        threading.Thread(target=tts.speak, args=(text, None, actor), daemon=True).start()
         _announce_speak(client, respond, player, shortcut, text)
 
     @app.event("app_home_opened")
@@ -376,15 +413,16 @@ def _cmd_play(say, player: SoundPlayer, stats: Stats, user: str, arg: str):
         return
 
     suffix = audio_effects.describe(effects)
+    actor = _user_label(user)
     if len(names) == 1:
-        if not player.play(names[0], effects):
+        if not player.play(names[0], effects, actor):
             say(f":x: Le fichier `{names[0]}` n'a pas pu être décodé (format audio non reconnu).")
             return
         say(f":arrow_forward: Lecture de `{names[0]}`{suffix}.")
         _last_played = names[0]
         stats.record(names[0], user)
         return
-    if not player.play_sequence(names, effects):
+    if not player.play_sequence(names, effects, actor):
         say(":x: Aucun de ces sons n'a pu être joué.")
         return
     say(":arrow_forward: Enchaînement : " + " → ".join(f"`{n}`" for n in names) + suffix)
@@ -404,7 +442,7 @@ def _cmd_random(say, player: SoundPlayer, stats: Stats, user: str, arg: str):
     if name is None:
         say(":speaker: Aucun son disponible pour le moment.")
         return
-    if not player.play(name, effects):
+    if not player.play(name, effects, _user_label(user)):
         say(f":x: Le fichier `{name}` n'a pas pu être décodé (format audio non reconnu).")
         return
     _last_played = name
@@ -1038,19 +1076,19 @@ def _cmd_tts(say, tts: TtsEngine, stats: Stats, user: str, arg: str):
     lang_hint = f" _(lang : `{lang or 'fr'}`)_"
     say(f":speaking_head_in_silhouette: *{text}*{lang_hint}")
     stats.record("tts", user)
-    threading.Thread(target=tts.speak, args=(text, lang), daemon=True).start()
+    threading.Thread(target=tts.speak, args=(text, lang, _user_label(user)), daemon=True).start()
 
 
-def _cmd_volume(say, player: SoundPlayer, arg: str):
+def _cmd_volume(say, player: SoundPlayer, arg: str, actor: str | None = None):
     if arg in ("up", "haut", "+"):
-        vol = player.volume_up()
+        vol = player.volume_up(actor=actor)
         say(f":loud_sound: Volume : {int(vol * 100)} %")
     elif arg in ("down", "bas", "-"):
-        vol = player.volume_down()
+        vol = player.volume_down(actor=actor)
         say(f":sound: Volume : {int(vol * 100)} %")
     elif arg.rstrip("%").isdigit():
         requested = int(arg.rstrip("%")) / 100
-        player.set_volume(requested)
+        player.set_volume(requested, actor)
         actual = player.get_volume()
         if actual < requested:
             say(f":loud_sound: Volume réglé à {int(actual * 100)} % (max autorisé — valeur demandée : {int(requested * 100)} %).")

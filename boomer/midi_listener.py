@@ -3,6 +3,7 @@ import time
 from collections.abc import Callable
 import mido
 from boomer.sound_player import SoundPlayer, MIDI_ACTIONS
+from boomer.stats import ACTOR_MIDI
 
 logger = logging.getLogger(__name__)
 
@@ -76,17 +77,17 @@ class MidiListener:
         logger.info("Note %d -> '%s'", note, name)
         if name in MIDI_ACTIONS:
             if name == "volume+":
-                vol = self.player.volume_up()
+                vol = self.player.volume_up(actor=ACTOR_MIDI)
                 self.player.beep(frequency=900, duration=0.07)
             elif name == "volume-":
-                vol = self.player.volume_down()
+                vol = self.player.volume_down(actor=ACTOR_MIDI)
                 self.player.beep(frequency=500, duration=0.07)
             else:
                 return
             if self._volume_action_callback:
                 self._volume_action_callback(name, vol)
             return
-        played = self.player.play(name)
+        played = self.player.play(name, actor=ACTOR_MIDI)
         if played:
             if self._play_callback:
                 self._play_callback(name)

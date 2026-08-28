@@ -62,49 +62,62 @@ class Stats:
         except OSError:
             logger.exception("Cannot write %s", self._path)
 
-    def _since(self, period: str) -> float | None:
+    def _period_start(self, period: str) -> datetime.datetime | None:
         now = datetime.datetime.now()
         if period == "week":
-            start = (now - datetime.timedelta(days=now.weekday())).replace(
+            return (now - datetime.timedelta(days=now.weekday())).replace(
                 hour=0, minute=0, second=0, microsecond=0
             )
-        elif period == "day":
-            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        elif period == "month":
-            start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        else:
-            return None
-        return start.timestamp()
+        if period == "day":
+            return now.replace(hour=0, minute=0, second=0, microsecond=0)
+        if period == "month":
+            return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        return None
 
-    def _filter(self, period: str, actor: str | None = None) -> list[list]:
-        since = self._since(period)
+    def _window(self, period: str, previous: bool = False) -> tuple[float, float] | None:
+        """(start, end) of the period, or of the one before it. None means no limit."""
+        start = self._period_start(period)
+        if start is None:
+            return None
+        now = datetime.datetime.now()
+        if not previous:
+            return (start.timestamp(), now.timestamp())
+        if period == "day":
+            earlier = start - datetime.timedelta(days=1)
+        elif period == "week":
+            earlier = start - datetime.timedelta(days=7)
+        else:
+            earlier = (start - datetime.timedelta(days=1)).replace(day=1)
+        # Same elapsed time, so a half-finished week compares against half a week
+        return (earlier.timestamp(), earlier.timestamp() + (now - start).total_seconds())
+
+    def _filter(self, period: str, actor: str | None = None, previous: bool = False) -> list[list]:
         with self._lock:
             events = list(self._events)
-        if since is not None:
-            events = [e for e in events if e[0] >= since]
+        if previous and period == "all":
+            return []
+        window = self._window(period, previous)
+        if window is not None:
+            start, end = window
+            events = [e for e in events if start <= e[0] < end]
         if actor is not None:
             events = [e for e in events if e[2] == actor]
         return events
 
-    def total(self, period: str = "all", actor: str | None = None) -> int:
-        return len(self._filter(period, actor))
+    def total(self, period: str = "all", actor: str | None = None, previous: bool = False) -> int:
+        return len(self._filter(period, actor, previous))
 
     def top_sounds(self, period: str = "all", actor: str | None = None,
-                   limit: int | None = 10) -> list[tuple[str, int]]:
-        return Counter(e[1] for e in self._filter(period, actor)).most_common(limit)
+                   limit: int | None = 10, previous: bool = False) -> list[tuple[str, int]]:
+        return Counter(e[1] for e in self._filter(period, actor, previous)).most_common(limit)
 
     def top_actors(self, period: str = "all", limit: int | None = 10,
-                   humans_only: bool = False) -> list[tuple[str, int]]:
+                   humans_only: bool = False, previous: bool = False) -> list[tuple[str, int]]:
         """Rank the triggers. The MIDI keyboard usually dwarfs everyone, hence humans_only."""
-        actors = (e[2] for e in self._filter(period))
+        actors = (e[2] for e in self._filter(period, previous=previous))
         if humans_only:
             actors = (a for a in actors if a not in PSEUDO_ACTORS)
         return Counter(actors).most_common(limit)
-
-    def signature_sound(self, actor: str, period: str = "all") -> str | None:
-        """The sound this actor played the most."""
-        top = self.top_sounds(period, actor, limit=1)
-        return top[0][0] if top else None
 
     def first_play(self) -> float | None:
         with self._lock:

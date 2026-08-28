@@ -41,6 +41,7 @@ _PERIOD_ALIASES = {
     "tout": "all", "all": "all", "total": "all",
 }
 _PERIOD_LABELS = {"day": "aujourd'hui", "week": "cette semaine", "month": "ce mois-ci", "all": "depuis toujours"}
+_PREVIOUS_LABELS = {"day": "hier", "week": "la semaine passée", "month": "le mois passé"}
 
 # Slack caps a view at 100 blocks; keep a margin for the control panel
 _MAX_HOME_BLOCKS = 90
@@ -934,22 +935,50 @@ def _actor_label(actor: str) -> str:
     return f"<@{actor}>"
 
 
+def _trend(current: int, previous: int | None, versus: str | None = None) -> str:
+    """Change against the same elapsed span of the previous period. None: nothing to compare to."""
+    if previous is None:
+        return ""
+    if not previous:
+        return " _(nouveau)_" if current else ""
+    change = round((current - previous) / previous * 100)
+    label = "=" if change == 0 else f"{change:+d} %"
+    return f" _({label}{f' vs {versus}' if versus else ''})_"
+
+
+def _favourites(stats: Stats, period: str, actor: str, limit: int = 3) -> str:
+    """The actor's most played sounds, as one indented line."""
+    top = stats.top_sounds(period, actor=actor, limit=limit)
+    if not top:
+        return ""
+    return "        " + " · ".join(f"`{name}` ×{count}" for name, count in top)
+
+
 def _stats_blocks(stats: Stats, period: str, title: str | None = None) -> list:
     total = stats.total(period)
     head = title or f":bar_chart: *Classement — {_PERIOD_LABELS[period]}*"
     if not total:
         return [{"type": "section", "text": {"type": "mrkdwn", "text": f"{head}\n_Aucune lecture sur la période._"}}]
 
+    # "all" spans everything, so there is no earlier period to compare it to
+    compare = period != "all"
+    prev_total = stats.total(period, previous=True) if compare else None
+    prev_sounds = dict(stats.top_sounds(period, limit=None, previous=True)) if compare else {}
+    prev_actors = dict(stats.top_actors(period, limit=None, previous=True)) if compare else {}
+
+    def trend(count: int, key: str, previous: dict) -> str:
+        return _trend(count, previous.get(key, 0) if compare else None)
+
     medals = [":first_place_medal:", ":second_place_medal:", ":third_place_medal:"]
     sounds = "\n".join(
-        f"{medals[i] if i < 3 else '   •'} `{name}` — {count}"
+        f"{medals[i] if i < 3 else '   •'} `{name}` — {count}{trend(count, name, prev_sounds)}"
         for i, (name, count) in enumerate(stats.top_sounds(period, limit=5))
     )
     humans = stats.top_actors(period, limit=5, humans_only=True)
     if humans:
         actors = "\n".join(
             f"{medals[i] if i < 3 else '   •'} {_actor_label(actor)} — {count}"
-            f" _(`{stats.signature_sound(actor, period)}` en tête)_"
+            f"{trend(count, actor, prev_actors)}\n{_favourites(stats, period, actor)}"
             for i, (actor, count) in enumerate(humans)
         )
     else:
@@ -961,7 +990,8 @@ def _stats_blocks(stats: Stats, period: str, title: str | None = None) -> list:
     if midi_total:
         offstage.append(
             f"{_actor_label(ACTOR_MIDI)} — {midi_total}"
-            f" _(`{stats.signature_sound(ACTOR_MIDI, period)}` en tête)_"
+            f"{trend(midi_total, ACTOR_MIDI, prev_actors)}\n"
+            f"{_favourites(stats, period, ACTOR_MIDI)}"
         )
     scheduled = stats.top_sounds(period, actor=ACTOR_SCHEDULE, limit=None)
     if scheduled:
@@ -970,8 +1000,9 @@ def _stats_blocks(stats: Stats, period: str, title: str | None = None) -> list:
             + "\n".join(f"• `{name}` — {count}" for name, count in scheduled)
         )
 
+    totals = f"{total} lectures au total{_trend(total, prev_total, _PREVIOUS_LABELS.get(period))}"
     blocks = [
-        {"type": "section", "text": {"type": "mrkdwn", "text": f"{head}\n{total} lectures au total."}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"{head}\n{totals}"}},
         {"type": "section", "text": {"type": "mrkdwn", "text": f"*Sons les plus joués*\n{sounds}"}},
         {"type": "section", "text": {"type": "mrkdwn", "text": f"*Déclencheurs*\n{actors}"}},
     ]

@@ -75,8 +75,9 @@ Puis `make start`.
    C'est le mode recommandé : pas besoin d'IP publique ni de reverse proxy pour le Pi.
    Sans `SLACK_APP_TOKEN`, Boomer démarre en mode HTTP sur `PORT` (3000 par défaut).
 3. **Slash command** : `/boomer_v3`.
-4. **Bot token scopes** : `chat:write`, `commands`, `files:read`, `users:read`
-   (ce dernier sert à afficher les noms plutôt que les IDs dans les logs).
+4. **Bot token scopes** : `chat:write`, `commands`, `files:read`, `files:write`, `users:read`
+   (`users:read` sert à afficher les noms plutôt que les IDs dans les logs,
+   `files:write` à publier les graphiques du récap).
 5. **Event subscriptions** : `message.channels` (et `message.groups` pour les canaux privés),
    nécessaire pour récupérer les fichiers audio envoyés après un `add`, et `app_home_opened`
    pour l'onglet *Accueil*.

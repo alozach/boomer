@@ -1,3 +1,4 @@
+import calendar
 import datetime
 import json
 import logging
@@ -118,6 +119,38 @@ class Stats:
         if humans_only:
             actors = (a for a in actors if a not in PSEUDO_ACTORS)
         return Counter(actors).most_common(limit)
+
+    def _histogram(self, events: list[list], slot, size: int) -> list[int]:
+        counts = [0] * size
+        for event in events:
+            index = slot(datetime.datetime.fromtimestamp(event[0]))
+            if 0 <= index < size:
+                counts[index] += 1
+        return counts
+
+    def timeline(self, period: str, sound: str | None = None,
+                 actor: str | None = None) -> list[int]:
+        """Plays slot by slot: one slot per hour for a day, one per day for a week or a month."""
+        events = self._filter(period, actor)
+        if sound is not None:
+            events = [e for e in events if e[1] == sound]
+        if period == "day":
+            return self._histogram(events, lambda d: d.hour, 24)
+        start = self._period_start(period)
+        if start is None:
+            return []
+        size = 7 if period == "week" else calendar.monthrange(start.year, start.month)[1]
+        return self._histogram(events, lambda d: (d.date() - start.date()).days, size)
+
+    def by_hour(self, period: str = "week", sound: str | None = None, actor: str | None = None,
+                per_hour: int = 1) -> list[int]:
+        """Plays split into the day's slots, whatever the day: per_hour slots per hour."""
+        events = self._filter(period, actor)
+        if sound is not None:
+            events = [e for e in events if e[1] == sound]
+        return self._histogram(
+            events, lambda d: d.hour * per_hour + d.minute * per_hour // 60, 24 * per_hour
+        )
 
     def first_play(self) -> float | None:
         with self._lock:

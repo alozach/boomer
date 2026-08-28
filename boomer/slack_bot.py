@@ -12,7 +12,7 @@ import requests
 from slack_bolt import App
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
-from boomer import audio_effects
+from boomer import audio_effects, charts
 from boomer.audio_effects import EffectError
 from boomer.sound_player import (SoundPlayer, MIDI_ACTIONS, SUPPORTED_EXTENSIONS,
                                  can_decode, sniff_extension)
@@ -42,6 +42,11 @@ _PERIOD_ALIASES = {
 }
 _PERIOD_LABELS = {"day": "aujourd'hui", "week": "cette semaine", "month": "ce mois-ci", "all": "depuis toujours"}
 _PREVIOUS_LABELS = {"day": "hier", "week": "la semaine passée", "month": "le mois passé"}
+
+# Sparkline charts: mrkdwn code blocks are monospace, so the columns line up
+_SPARK = "▁▂▃▄▅▆▇█"
+_CHART_LABEL_WIDTH = 18
+# The PNG charts own the working-day range; the sparklines follow it
 
 # Slack caps a view at 100 blocks; keep a margin for the control panel
 _MAX_HOME_BLOCKS = 90
@@ -169,7 +174,7 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
         elif action in ("random", "aleatoire", "hasard"):
             _cmd_random(say, player, stats, command["user_id"], arg)
         elif action in ("stats", "recap", "top"):
-            _cmd_stats(say, stats, command["user_id"], arg)
+            _cmd_stats(say, slack_client, stats, command["user_id"], command["channel_id"], arg)
         elif action == "add":
             _cmd_add(say, player, command, arg)
         elif action == "rename":
@@ -360,6 +365,8 @@ def _start_weekly_recap(client: WebClient, player: SoundPlayer, stats: Stats):
             )
         except Exception:
             logger.exception("Cannot post the weekly recap")
+            return
+        _post_chart(client, info["channel"], stats, "week", "Sons les plus joués — cette semaine")
 
     timer = threading.Timer(_seconds_until_recap(), fire)
     timer.daemon = True
@@ -608,6 +615,18 @@ def _post_volume_notice(client: WebClient, player: SoundPlayer, action: str):
         client.chat_postMessage(channel=info["channel"], text=text)
     except SlackApiError:
         logger.exception("Cannot post the volume notice")
+
+
+def _post_chart(client: WebClient, channel: str, stats: Stats, period: str, title: str):
+    """Upload the drawn version of the report. Needs the files:write scope; the text stands alone."""
+    png = charts.render(stats, period, title)
+    if png is None:
+        return
+    try:
+        client.files_upload_v2(channel=channel, file=png, title=title,
+                               filename=f"boomer-{period}.png")
+    except SlackApiError:
+        logger.exception("Cannot upload the %s chart", period)
 
 
 def _in_background(fn, *args):
@@ -927,6 +946,10 @@ def _cmd_schedule(say, scheduler: Scheduler, player: SoundPlayer, arg: str):
     say(f":white_check_mark: Planifié `{sound}` à {time_str} ({label}). ID : `{sid}`")
 
 
+def _ellipsis(label: str, width: int = _CHART_LABEL_WIDTH) -> str:
+    return label if len(label) <= width else label[: width - 1] + "…"
+
+
 def _actor_label(actor: str) -> str:
     if actor == ACTOR_MIDI:
         return ":musical_keyboard: clavier MIDI"
@@ -935,15 +958,97 @@ def _actor_label(actor: str) -> str:
     return f"<@{actor}>"
 
 
-def _trend(current: int, previous: int | None, versus: str | None = None) -> str:
+def _trend_label(current: int, previous: int | None) -> str:
     """Change against the same elapsed span of the previous period. None: nothing to compare to."""
     if previous is None:
         return ""
     if not previous:
-        return " _(nouveau)_" if current else ""
+        return "nouveau" if current else ""
     change = round((current - previous) / previous * 100)
-    label = "=" if change == 0 else f"{change:+d} %"
+    return "=" if change == 0 else f"{change:+d} %"
+
+
+def _trend(current: int, previous: int | None, versus: str | None = None) -> str:
+    label = _trend_label(current, previous)
+    if not label:
+        return ""
     return f" _({label}{f' vs {versus}' if versus else ''})_"
+
+
+def _sparkline(values: list[int], top: int) -> str:
+    """One character per slot, on a scale shared by every line of a chart."""
+    if top <= 0:
+        return _SPARK[0] * len(values)
+    steps = len(_SPARK) - 2
+    return "".join(
+        _SPARK[0] if v == 0 else _SPARK[1 + round((v - 1) / max(1, top - 1) * steps)]
+        for v in values
+    )
+
+
+def _ruler(size: int, marks: dict[int, str]) -> str:
+    """Axis legend, each label starting at its own slot."""
+    line = [" "] * size
+    for pos, text in marks.items():
+        line[pos:pos + len(text)] = list(text)
+    return "".join(line[:size]).rstrip()
+
+
+def _office_hours(day: list[int], per_hour: int = 1) -> list[int]:
+    """Keep the working-day slots of a whole-day histogram."""
+    return day[charts.CHART_HOURS.start * per_hour:charts.CHART_HOURS.stop * per_hour]
+
+
+def _hour_ruler(size: int, per_hour: int = 1) -> str:
+    """One label every few hours, spaced out enough for a '13h' not to touch the next one."""
+    step = max(1, -(-4 // per_hour))
+    marks = {}
+    for hour in range(charts.CHART_HOURS.start, charts.CHART_HOURS.stop, step):
+        position = (hour - charts.CHART_HOURS.start) * per_hour
+        if position + len(f"{hour}h") <= size:
+            marks[position] = f"{hour}h"
+    return _ruler(size, marks)
+
+
+def _period_ruler(period: str, size: int) -> str:
+    if period == "day":
+        return _hour_ruler(size)
+    if period == "week":
+        return "LMMJVSD"[:size]
+    return _ruler(size, {day - 1: str(day) for day in (1, 5, 10, 15, 20, 25, 30) if day <= size})
+
+
+def _timeline_blocks(stats: Stats, period: str) -> list:
+    """The top sounds over time: one sparkline each, hour by hour for a day, day by day otherwise."""
+    if period == "all":
+        return []
+    totals = dict(stats.top_sounds(period, limit=5))
+    names = list(totals)
+    series = {name: stats.timeline(period, sound=name) for name in names}
+    if period == "day":
+        series = {name: _office_hours(counts) for name, counts in series.items()}
+    # Slots still ahead of us would only trail a flat line
+    size = charts.elapsed_slots(period, len(next(iter(series.values()))))
+    series = {name: counts[:size] for name, counts in series.items()}
+    peak = max((max(counts) for counts in series.values()), default=0)
+    if peak < 2:
+        # Every slot at 0 or 1: the chart would say nothing the ranking does not
+        return []
+    width = max(len(_ellipsis(name)) for name in names)
+    lines = [f"{'':<{width}}  {_period_ruler(period, size)}"]
+    lines += [f"{_ellipsis(name):<{width}}  {_sparkline(series[name], peak)}  {totals[name]}"
+              for name in names]
+    chart = "*Évolution des 5 sons les plus joués*\n```\n" + "\n".join(lines) + "\n```"
+
+    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": chart}}]
+    if period != "day":
+        # Within a week or a month, the interesting axis is the time of day
+        # Same half-hour resolution as the drawn chart
+        hours = _office_hours(stats.by_hour(period, per_hour=charts.HOUR_SLOTS), charts.HOUR_SLOTS)
+        hourly = (f"*Heures chaudes*\n```\n{_hour_ruler(len(hours), charts.HOUR_SLOTS)}\n"
+                  f"{_sparkline(hours, max(hours))}\n```")
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": hourly}})
+    return blocks
 
 
 def _favourites(stats: Stats, period: str, actor: str, limit: int = 3) -> str:
@@ -1004,14 +1109,15 @@ def _stats_blocks(stats: Stats, period: str, title: str | None = None) -> list:
     blocks = [
         {"type": "section", "text": {"type": "mrkdwn", "text": f"{head}\n{totals}"}},
         {"type": "section", "text": {"type": "mrkdwn", "text": f"*Sons les plus joués*\n{sounds}"}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Déclencheurs*\n{actors}"}},
     ]
+    blocks.extend(_timeline_blocks(stats, period))
+    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*Déclencheurs*\n{actors}"}})
     if offstage:
         blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": "\n".join(offstage)}]})
     return blocks
 
 
-def _cmd_stats(say, stats: Stats, user: str, arg: str):
+def _cmd_stats(say, client: WebClient, stats: Stats, user: str, channel: str, arg: str):
     parts = arg.lower().split()
     period = "week"
     mine = False
@@ -1026,6 +1132,8 @@ def _cmd_stats(say, stats: Stats, user: str, arg: str):
 
     if not mine:
         say(blocks=_stats_blocks(stats, period), text="Classement Boomer")
+        _in_background(_post_chart, client, channel, stats, period,
+                       f"Sons les plus joués — {_PERIOD_LABELS[period]}")
         return
 
     total = stats.total(period, actor=user)

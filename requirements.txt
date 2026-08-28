@@ -7,3 +7,5 @@ slack-sdk>=3.27.0
 python-dotenv>=1.0.0
 edge-tts>=6.1.0
 requests>=2.31.0
+# Optional: draws the PNG charts of the report, sparklines are used without it
+matplotlib>=3.7.0

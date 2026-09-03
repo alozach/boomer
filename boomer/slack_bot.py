@@ -83,7 +83,8 @@ def _user_label(user_id: str, client: WebClient | None = None) -> str:
             profile = client.users_info(user=user_id)["user"]
             name = (profile.get("profile") or {}).get("display_name") or profile.get("real_name")
         except SlackApiError as exc:
-            logger.debug("Cannot resolve user %s: %s", user_id, exc)
+            logger.warning("Cannot resolve user %s (logs will show the ID only): %s",
+                           user_id, exc)
         # Cache the failure too, so a lookup is never retried on every request
         name = _user_names.setdefault(user_id, name or "")
     return f"{name} ({user_id})" if name else user_id

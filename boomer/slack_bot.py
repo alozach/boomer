@@ -77,9 +77,15 @@ def _remember_user(body: dict) -> None:
 
 
 def _user_label(user_id: str, client: WebClient | None = None) -> str:
-    """Name and ID of a Slack user, looked up once then cached."""
+    """Name and ID of a Slack user, for the logs."""
     if not user_id:
         return "?"
+    name = _user_name(user_id, client)
+    return f"{name} ({user_id})" if name else user_id
+
+
+def _user_name(user_id: str, client: WebClient | None = None) -> str:
+    """Display name of a Slack user, looked up once then cached; empty when unknown."""
     name = _user_names.get(user_id)
     if name is None and client is not None:
         try:
@@ -90,7 +96,7 @@ def _user_label(user_id: str, client: WebClient | None = None) -> str:
                            user_id, exc)
         # Cache the failure too, so a lookup is never retried on every request
         name = _user_names.setdefault(user_id, name or "")
-    return f"{name} ({user_id})" if name else user_id
+    return name or ""
 
 
 def _request_user_id(body: dict) -> str | None:
@@ -1323,6 +1329,11 @@ def _resolve_user(client: WebClient, ref: str) -> str | None:
     return None
 
 
+def _without_mentions(text: str, client: WebClient) -> str:
+    """Plain names instead of mentions, for lists that have no reason to ping anyone."""
+    return _USER_REF_RE.sub(lambda m: f"@{_user_name(m.group(1), client) or m.group(1)}", text)
+
+
 def _split_user_arg(arg: str) -> tuple[str, str]:
     match = re.match(r"(<@[^>]+>|\S+)\s*(.*)", arg)
     return (match.group(1), match.group(2).strip()) if match else ("", "")
@@ -1359,7 +1370,7 @@ def _reason_suffix(reason: str) -> str:
 def _cmd_ban(respond, client: WebClient, player: SoundPlayer, moderation: Moderation,
              command: dict, arg: str):
     if arg.lower() in _QUIET_ARGS:
-        _list_bans(respond, moderation)
+        _list_bans(respond, client, moderation)
         return
     parsed = _parse_ban_args(client, arg)
     if isinstance(parsed, str):
@@ -1378,20 +1389,20 @@ def _cmd_ban(respond, client: WebClient, player: SoundPlayer, moderation: Modera
         respond(text)
 
 
-def _list_bans(respond, moderation: Moderation):
+def _list_bans(respond, client: WebClient, moderation: Moderation):
     bans = moderation.active_bans()
     if not bans:
         respond(f"Aucun ban en cours.\n{_BAN_USAGE}")
         return
-    respond(":no_entry: Vilains garnements au coin :\n" + "\n".join(
-        f"• <@{user_id}> — encore {format_duration(left)}" for user_id, left in bans))
+    respond(_without_mentions(":no_entry: Vilains garnements au coin :\n" + "\n".join(
+        f"• <@{user_id}> — encore {format_duration(left)}" for user_id, left in bans), client))
 
 
 def _cmd_ban_request(respond, client: WebClient, player: SoundPlayer, moderation: Moderation,
                      command: dict, arg: str):
     """Anyone can ask for a ban; the admins decide from a message only they see in the channel."""
     if arg.lower() in _QUIET_ARGS:
-        _list_bans(respond, moderation)
+        _list_bans(respond, client, moderation)
         return
     if not moderation.admins:
         respond(":shrug: Aucun admin n'est configuré pour juger ta demande.")
@@ -1500,7 +1511,8 @@ def _cmd_history(respond, history: History, arg: str, client: WebClient):
                         "Usage : `/boomer_v3 history [nombre] [@personne|midi|planif]`")
                 return
     entries = history.last(limit, actor)
-    title = ":scroll: *Historique*" + (f" — {_actor_label(actor)}" if actor else "")
+    title = _without_mentions(":scroll: *Historique*" + (f" — {_actor_label(actor)}" if actor else ""),
+                              client)
     if not entries:
         respond(f"{title}\n_Rien pour le moment._")
         return
@@ -1511,7 +1523,7 @@ def _cmd_history(respond, history: History, arg: str, client: WebClient):
         moment = datetime.datetime.fromtimestamp(timestamp)
         when = moment.strftime("%H:%M" if moment.date() == today else "%d/%m %H:%M")
         lines.append(f"`{when}` {_actor_label(who)} — {text}")
-    respond(f"{title}\n" + "\n".join(lines))
+    respond(f"{title}\n" + _without_mentions("\n".join(lines), client))
 
 
 _MENTION_RE = re.compile(r"<[@#!][^>|]+(?:\|([^>]*))?>")

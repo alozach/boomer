@@ -153,9 +153,9 @@ Les admins sont listés dans `BOOMER_ADMINS` (IDs Slack séparés par des virgul
 `.env`). Sans cette variable, personne n'est admin et un warning le signale au démarrage.
 L'ID d'une personne se copie depuis son profil Slack (⋮ → *Copier l'ID de membre*).
 
-Bannir quelqu'un coupe toutes ses interactions avec Boomer (commandes, boutons,
-raccourci) pour une durée donnée — 10 min par défaut, `30s`, `5m`, `1h30`… Un admin ne
-peut pas être banni.
+Bannir quelqu'un coupe ses interactions avec Boomer (commandes, boutons, raccourci) pour
+une durée donnée — 10 min par défaut, `30s`, `5m`, `1h30`… Seuls les contrôles restent
+permis : stop, mute et volume. Un admin ne peut pas être banni.
 
 - `/boomer_v3 ban @personne [durée] [motif]` :
   - tapé par un **admin**, la sanction est immédiate ;
@@ -164,6 +164,10 @@ peut pas être banni.
     boutons, *Accepter* et *Refuser*. Le premier admin qui tranche décide ; chez les autres,
     le bouton répond que la demande est déjà traitée. Un admin absent du canal reçoit la
     demande en message privé du bot. Une seule demande en attente par personne, et par cible.
+- `piano` (ou `midi`, `clavier`) à la place de `@personne` vise le clavier MIDI : ses touches
+  de sons sont ignorées, avec un bip grave (les touches de volume restent actives), et le canal du panneau le rappelle au plus toutes les 30 s.
+  Pas de rallonge pour récidive, faute de savoir qui appuie. L'assignation de touches (`map`)
+  reste possible.
 - `/boomer_v3 ban` liste les bans en cours, `/boomer_v3 unban @personne` (admin) lève un ban.
 - `/boomer_v3 history [nombre] [@personne|midi|planif]` (admin) affiche les dernières actions
   (20 par défaut, 50 au plus) : sons joués, stop, mute, volume, TTS, ajouts, renommages,

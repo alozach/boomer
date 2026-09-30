@@ -16,6 +16,8 @@ class MidiListener:
         self._note_interceptor: Callable[[int], bool] | None = None
         self._volume_action_callback: Callable[[str, float], None] | None = None
         self._play_callback: Callable[[str], None] | None = None
+        # When set, decides whether a key may play its sound; volume keys always go through
+        self._press_gate: Callable[[], bool] | None = None
 
     def set_note_interceptor(self, callback: Callable[[int], bool]):
         self._note_interceptor = callback
@@ -28,6 +30,9 @@ class MidiListener:
 
     def set_volume_action_callback(self, callback: Callable[[str, float], None]):
         self._volume_action_callback = callback
+
+    def set_press_gate(self, callback: Callable[[], bool]):
+        self._press_gate = callback
 
     def has_interceptor(self) -> bool:
         return self._note_interceptor is not None
@@ -73,6 +78,10 @@ class MidiListener:
         name = mappings.get(note)
         if name is None:
             logger.info("Note %d pressed but mapped to nothing", note)
+            return
+        if name not in MIDI_ACTIONS and self._press_gate is not None and not self._press_gate():
+            logger.info("Note %d ignored: the keyboard is banned", note)
+            self.player.beep(frequency=250, duration=0.15)
             return
         logger.info("Note %d -> '%s'", note, name)
         if name in MIDI_ACTIONS:

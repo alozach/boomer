@@ -37,6 +37,13 @@ _EFFECTS_HELP = (
 _RECAP_WEEKDAY = 4
 _RECAP_HOUR = 17
 
+# Every day at 9:30, and on panel clicks, the panel is reposted once this many
+# messages have pushed it out of sight
+_DAILY_PANEL_TIME = (9, 30)
+_PANEL_BURIED_AFTER = 40
+# Clicks come in bursts and conversations.history is rate limited
+_BURIAL_CHECK_INTERVAL = 60
+
 _PERIOD_ALIASES = {
     "jour": "day", "aujourdhui": "day", "day": "day", "today": "day",
     "semaine": "week", "week": "week",
@@ -135,6 +142,9 @@ _pending_maps_lock = threading.Lock()
 
 # Last sound played, shown on the panels and the App Home
 _last_played: str | None = None
+
+_last_burial_check = 0.0
+_burial_lock = threading.Lock()
 
 # Volume announcements are debounced: holding a MIDI volume key fires one press per step
 _VOLUME_NOTICE_DELAY = 1.5
@@ -438,6 +448,7 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
         _download_and_save(say, player, name, file_info, overwrite=False)
 
     _start_weekly_recap(slack_client, player, stats)
+    _start_daily_panel(slack_client, player)
 
     return app
 
@@ -462,19 +473,61 @@ def _start_weekly_recap(client: WebClient, player: SoundPlayer, stats: Stats):
             return
         _post_chart(client, info["channel"], stats, "week", "Sons les plus joués — cette semaine")
 
-    timer = threading.Timer(_seconds_until_recap(), fire)
+    timer = threading.Timer(_seconds_until(_RECAP_HOUR, 0, _RECAP_WEEKDAY), fire)
     timer.daemon = True
     timer.start()
 
 
-def _seconds_until_recap() -> float:
+def _start_daily_panel(client: WebClient, player: SoundPlayer):
+    """Bring the panel back into view if it got buried, then re-arm for tomorrow."""
+    def fire():
+        _start_daily_panel(client, player)
+        _repost_panel_if_buried(client, player, throttled=False)
+
+    timer = threading.Timer(_seconds_until(*_DAILY_PANEL_TIME), fire)
+    timer.daemon = True
+    timer.start()
+
+
+def _repost_panel_if_buried(client: WebClient, player: SoundPlayer, throttled: bool = True):
+    """Post a fresh panel under the latest messages; it becomes the tracked one."""
+    global _last_burial_check
+    info = player.get_panel_info()
+    if not info:
+        return
+    with _burial_lock:
+        now = time.monotonic()
+        if throttled and now - _last_burial_check < _BURIAL_CHECK_INTERVAL:
+            return
+        _last_burial_check = now
+    try:
+        # Top-level messages only: thread replies do not push the panel up
+        newer = client.conversations_history(channel=info["channel"], oldest=info["ts"],
+                                             limit=_PANEL_BURIED_AFTER)["messages"]
+    except SlackApiError as exc:
+        logger.warning("Cannot read the history of %s to locate the panel: %s", info["channel"], exc)
+        return
+    if len(newer) < _PANEL_BURIED_AFTER:
+        return
+    try:
+        result = client.chat_postMessage(channel=info["channel"], blocks=_panel_blocks(player),
+                                         text="Boomer")
+    except SlackApiError:
+        logger.exception("Cannot repost the panel")
+        return
+    logger.info("Panel buried under %d+ messages, reposted", _PANEL_BURIED_AFTER)
+    player.set_panel_info(info["channel"], result["ts"])
+
+
+def _seconds_until(hour: int, minute: int, weekday: int | None = None) -> float:
+    """Delay to the next occurrence of that time, on that weekday if given, else on any day."""
     now = datetime.datetime.now()
-    days_ahead = (_RECAP_WEEKDAY - now.weekday()) % 7
+    days_ahead = (weekday - now.weekday()) % 7 if weekday is not None else 0
     target = (now + datetime.timedelta(days=days_ahead)).replace(
-        hour=_RECAP_HOUR, minute=0, second=0, microsecond=0
+        hour=hour, minute=minute, second=0, microsecond=0
     )
     if target <= now:
-        target += datetime.timedelta(days=7)
+        target += datetime.timedelta(days=7 if weekday is not None else 1)
     return (target - now).total_seconds()
 
 
@@ -763,7 +816,8 @@ def _is_home(body: dict) -> bool:
 
 
 def _refresh_surface(body: dict, client: WebClient, player: SoundPlayer, stats: Stats):
-    """Redraw the surface the button was clicked from, and the stored panel if it is another one."""
+    """Redraw the surface the button was clicked from, and the stored panel if it is another one.
+    A click is also the moment to notice the panel got buried."""
     clicked_stored = False
     if _is_home(body):
         _publish_home(client, player, stats, body["user"]["id"])
@@ -776,6 +830,7 @@ def _refresh_surface(body: dict, client: WebClient, player: SoundPlayer, stats: 
             clicked_stored = player.get_panel_info() == {"channel": channel, "ts": message["ts"]}
     if not clicked_stored:
         _refresh_stored_panel(client, player)
+    _repost_panel_if_buried(client, player)
 
 
 def _notify_from_surface(body: dict, client: WebClient, text: str):

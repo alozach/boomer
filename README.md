@@ -79,9 +79,10 @@ Puis `make start`.
    C'est le mode recommandé : pas besoin d'IP publique ni de reverse proxy pour le Pi.
    Sans `SLACK_APP_TOKEN`, Boomer démarre en mode HTTP sur `PORT` (3000 par défaut).
 3. **Slash command** : `/boomer_v3`.
-4. **Bot token scopes** : `chat:write`, `commands`, `files:read`, `files:write`, `users:read`
-   (`users:read` sert à afficher les noms plutôt que les IDs dans les logs,
-   `files:write` à publier les graphiques du récap).
+4. **Bot token scopes** : `chat:write`, `commands`, `files:read`, `files:write`, `users:read`,
+   `channels:history` (`users:read` sert à afficher les noms plutôt que les IDs dans les logs,
+   `files:write` à publier les graphiques du récap, `channels:history` à savoir si le panneau
+   est enfoui sous trop de messages).
 5. **Event subscriptions** : `message.channels` (et `message.groups` pour les canaux privés),
    nécessaire pour récupérer les fichiers audio envoyés après un `add`, et `app_home_opened`
    pour l'onglet *Accueil*.
@@ -225,6 +226,11 @@ make run        # lancer en avant-plan sans systemd (debug)
   L'annonce a besoin d'un canal connu, c'est-à-dire d'un `/boomer_v3 panel` posté au moins
   une fois. Seul le dernier panneau posté est suivi : c'est lui qui est tenu à jour et dont le
   canal reçoit les annonces.
+- Quand le panneau est enfoui sous 40 messages ou plus (hors réponses dans les fils), Boomer
+  le reposte en bas du canal, et le nouveau devient le panneau suivi. Il vérifie chaque jour
+  à 9h30, et à chaque clic sur un panneau (au plus une fois par minute : l'API d'historique
+  de Slack est limitée en débit). Il lui faut le scope `channels:history`, et `groups:history`
+  pour un canal privé.
 - Les effets sont calculés en mémoire avec numpy : les fichiers d'origine ne sont jamais modifiés.
 - Toute nouvelle lecture (bouton, commande, touche MIDI) interrompt l'enchaînement en cours.
 - `stats.json` est écrit par lots (10 s) pour épargner la carte SD, et à l'arrêt du service.

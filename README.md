@@ -22,7 +22,8 @@ de synthèse ou planifier des lectures automatiques.
   26 langues, vitesse réglable, déclenchable sur n'importe quel message via un raccourci.
 - **Planification** — jouer un son à une heure donnée, tous les jours ou sur des jours choisis.
 - **Statistiques** — qui a joué quoi, combien de fois, et récap automatique le vendredi.
-- **Historique** — les admins consultent qui a fait quoi, sans passer par les logs.
+- **Modération** — les admins peuvent bannir quelqu'un temporairement et consulter
+  l'historique de qui a fait quoi, sans passer par les logs.
 - **Recherche approximative** — les noms de sons sont résolus en *fuzzy matching*,
   `/boomer_v3 play maarc` trouve `maaaarc`.
 
@@ -39,7 +40,7 @@ de synthèse ou planifier des lectures automatiques.
 | [boomer/scheduler.py](boomer/scheduler.py) | Planifications persistées dans `schedules.json` |
 | [boomer/stats.py](boomer/stats.py) | Historique des lectures persisté dans `stats.json` |
 | [boomer/history.py](boomer/history.py) | Journal des actions (qui a fait quoi) persisté dans `history.json` |
-| [boomer/moderation.py](boomer/moderation.py) | Admins |
+| [boomer/moderation.py](boomer/moderation.py) | Admins et bans temporaires |
 
 L'état persistant vit dans quatre fichiers JSON à la racine : `config.json`
 (mappings MIDI + références des panneaux Slack), `schedules.json` (planifications),
@@ -84,7 +85,8 @@ Puis `make start`.
 5. **Event subscriptions** : `message.channels` (et `message.groups` pour les canaux privés),
    nécessaire pour récupérer les fichiers audio envoyés après un `add`, et `app_home_opened`
    pour l'onglet *Accueil*.
-6. **App Home** : activer l'onglet *Accueil* (*Home Tab*) dans les *App Features*.
+6. **App Home** : activer l'onglet *Accueil* (*Home Tab*) dans les *App Features*, ainsi que
+   l'onglet *Messages*, où un admin absent du canal du panneau reçoit les demandes de ban.
 7. **Shortcut** : créer un raccourci *sur message* de callback ID `boomer_speak`
    (nom suggéré : « Lire à voix haute »).
 8. Inviter le bot dans le canal voulu.
@@ -145,17 +147,40 @@ nombre de lectures, et les personnes qui les déclenchent, avec le son que chacu
 Le vendredi à 17 h, Boomer poste de lui-même le récap de la semaine dans le canal du dernier
 panneau enregistré.
 
-### Historique
+### Modération
 
 Les admins sont listés dans `BOOMER_ADMINS` (IDs Slack séparés par des virgules, dans
 `.env`). Sans cette variable, personne n'est admin et un warning le signale au démarrage.
 L'ID d'une personne se copie depuis son profil Slack (⋮ → *Copier l'ID de membre*).
 
-`/boomer_v3 history [nombre] [@personne|midi|planif]` (admin) affiche les dernières actions
-(20 par défaut, 50 au plus) : sons joués, stop, mute, volume, TTS, ajouts, renommages…
-Les commandes en lecture seule (`list`, `stats`, `help`…) n'y figurent pas. Les 1000
-dernières actions sont conservées dans `history.json`. La réponse n'est visible que de qui
-la demande.
+Bannir quelqu'un coupe toutes ses interactions avec Boomer (commandes, boutons,
+raccourci) pour une durée donnée — 10 min par défaut, `30s`, `5m`, `1h30`… Un admin ne
+peut pas être banni.
+
+- `/boomer_v3 ban @personne [durée] [motif]` :
+  - tapé par un **admin**, la sanction est immédiate ;
+  - tapé par **n'importe qui d'autre**, c'est une demande : chaque admin la voit dans le
+    canal du panneau, dans un message que les autres membres ne voient pas, avec deux
+    boutons, *Accepter* et *Refuser*. Le premier admin qui tranche décide ; chez les autres,
+    le bouton répond que la demande est déjà traitée. Un admin absent du canal reçoit la
+    demande en message privé du bot. Une seule demande en attente par personne, et par cible.
+- `/boomer_v3 ban` liste les bans en cours, `/boomer_v3 unban @personne` (admin) lève un ban.
+- `/boomer_v3 history [nombre] [@personne|midi|planif]` (admin) affiche les dernières actions
+  (20 par défaut, 50 au plus) : sons joués, stop, mute, volume, TTS, ajouts, renommages,
+  bans, décisions… ainsi que les tentatives des personnes bannies. Les commandes en lecture
+  seule (`list`, `stats`, `help`…) n'y figurent pas. Les 1000 dernières actions sont
+  conservées dans `history.json`.
+
+Tout est annoncé dans le canal du panneau : ban, demande et décision, levée du ban, et
+chaque tentative d'une personne bannie (au plus une annonce toutes les 30 s par personne).
+La personne bannie voit en plus le temps qui lui reste.
+
+Toutes les 3 tentatives pendant un ban (3ᵉ, 6ᵉ, 9ᵉ…), il est rallongé de 10 min, annonce à
+l'appui ; le compteur repart de zéro à chaque nouveau ban ou levée de ban.
+
+Les listes et l'historique ne sont visibles que de qui les demande.
+
+Les bans et les demandes vivent en mémoire : un redémarrage les efface.
 
 Pour les mentions `@personne`, activer *Escape channels, users, and links* dans la
 configuration de la slash command est plus fiable ; sans elle, Boomer cherche la personne

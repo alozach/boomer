@@ -17,7 +17,8 @@ from boomer.audio_effects import EffectError
 from boomer.sound_player import (SoundPlayer, MIDI_ACTIONS, SUPPORTED_EXTENSIONS,
                                  can_decode, sniff_extension)
 from boomer.history import History
-from boomer.moderation import Moderation
+from boomer.moderation import (Moderation, ATTEMPTS_BEFORE_PENALTY, DEFAULT_BAN_SECONDS,
+                               PENALTY_SECONDS, format_duration, parse_duration)
 from boomer.stats import Stats, ACTOR_MIDI, ACTOR_SCHEDULE
 from boomer.tts_engine import TtsEngine, LANG_MAP
 from boomer.midi_listener import MidiListener
@@ -165,11 +166,37 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
                 )
 
     @app.middleware
-    def record_history(body, next):
-        """Keep track of who did what."""
+    def enforce_bans(body, client, ack, respond, next):
+        """Drop every interaction of a banned user, and keep track of who did what."""
+        user_id = _request_user_id(body)
         text = _history_text(body, player)
+        left = moderation.ban_remaining(user_id)
+        if left and _is_interaction(body) and not moderation.is_admin(user_id):
+            response = ack()
+            extended = moderation.record_attempt(user_id)
+            left = moderation.ban_remaining(user_id)
+            logger.info("Request from banned %s dropped (%s left%s)", _user_label(user_id, client),
+                        format_duration(left), ", ban extended" if extended else "")
+            if text:
+                history.record(user_id, f":no_entry: {text} _(bloqué : punition en cours)_")
+            penalty = f" (+{format_duration(PENALTY_SECONDS)} pour récidive)" if extended else ""
+            _in_background(_tell_user, body, client, respond,
+                           f":no_entry: Au coin pendant encore {format_duration(left)}{penalty}.")
+            # An extension is always announced; plain attempts at most once per cooldown
+            if moderation.shame_due(user_id) or extended:
+                attempt = f" : {text}" if text else ""
+                if extended:
+                    notice = (f":no_entry: <@{user_id}> a tenté {ATTEMPTS_BEFORE_PENALTY} fois d'échapper "
+                              f"à sa punition : +{format_duration(PENALTY_SECONDS)}, "
+                              f"encore {format_duration(left)}{attempt}")
+                else:
+                    notice = (f":no_entry: <@{user_id}> a tenté d'échapper à sa punition pendant son ban "
+                              f"(encore {format_duration(left)}){attempt}")
+                _in_background(_announce, client, player, notice, _request_channel_id(body))
+            # Returning the ack is what answers Slack when the chain stops here
+            return response
         if text:
-            history.record(_request_user_id(body), text)
+            history.record(user_id, text)
         next()
 
     @app.command("/boomer_v3")
@@ -224,8 +251,14 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
             _refresh_stored_panel(slack_client, player)
         elif action == "schedule":
             _cmd_schedule(say, scheduler, player, arg)
+        elif action in ("ban", "bannir") and not moderation.is_admin(command["user_id"]):
+            _cmd_ban_request(respond, slack_client, player, moderation, command, arg)
         elif action in _ADMIN_COMMANDS and not moderation.is_admin(command["user_id"]):
             respond(":lock: Cette commande est réservée aux admins de Boomer.")
+        elif action in ("ban", "bannir"):
+            _cmd_ban(respond, slack_client, player, moderation, command, arg)
+        elif action in ("unban", "debannir", "débannir"):
+            _cmd_unban(respond, slack_client, player, moderation, command, arg)
         elif action in ("history", "historique", "log", "logs"):
             _cmd_history(respond, history, arg, slack_client)
         else:
@@ -324,6 +357,33 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
         actor = _user_label(shortcut["user"]["id"], client)
         threading.Thread(target=tts.speak, args=(text, None, actor), daemon=True).start()
         _announce_speak(client, respond, player, shortcut, text)
+
+    @app.action(re.compile(r"^boomer_ban_(accept|refuse)$"))
+    def handle_ban_decision(ack, body, client, respond):
+        ack()
+        admin = body["user"]["id"]
+        if not moderation.is_admin(admin):
+            _in_background(_tell_user, body, client, respond, ":lock: Réservé aux admins de Boomer.")
+            return
+        request = moderation.take_request(body["actions"][0]["value"])
+        # An ephemeral message cannot be edited through the API: only the clicked one is closed,
+        # the other admins' copies say so when clicked in turn
+        if request is None:
+            _in_background(respond, text=":hourglass: Cette demande a déjà été traitée.",
+                           replace_original=True)
+            return
+        accepted = body["actions"][0]["action_id"] == "boomer_ban_accept"
+        if accepted:
+            moderation.ban(request.target, request.seconds)
+        verdict = "acceptée" if accepted else "refusée"
+        logger.info("%s %s the ban request of %s against %s", _user_label(admin, client),
+                    "accepted" if accepted else "refused", _user_label(request.requester, client),
+                    _user_label(request.target, client))
+        history.record(admin, f":scales: demande de <@{request.requester}> contre "
+                              f"<@{request.target}> {verdict}")
+        verdict = _ban_verdict(request, admin, accepted)
+        _in_background(respond, text=verdict, replace_original=True)
+        _in_background(_announce, client, player, verdict)
 
     @app.event("app_home_opened")
     def handle_home_opened(event, client):
@@ -653,11 +713,11 @@ def _post_chart(client: WebClient, channel: str, stats: Stats, period: str, titl
         logger.exception("Cannot upload the %s chart", period)
 
 
-def _in_background(fn, *args):
+def _in_background(fn, *args, **kwargs):
     """Slack API calls do not gate the answer: keep the handler thread free."""
     def run():
         try:
-            fn(*args)
+            fn(*args, **kwargs)
         except Exception:
             logger.exception("Background Slack call failed: %s", getattr(fn, "__name__", fn))
 
@@ -1168,7 +1228,8 @@ def _cmd_stats(say, client: WebClient, stats: Stats, user: str, channel: str, ar
     say(f":bar_chart: *Tes stats — {_PERIOD_LABELS[period]}*\n{total} lectures.\n{top}")
 
 
-_ADMIN_COMMANDS = {"history", "historique", "log", "logs"}
+_ADMIN_COMMANDS = {"ban", "bannir", "unban", "debannir", "débannir",
+                   "history", "historique", "log", "logs"}
 
 # They change nothing, so they stay out of the history. `random` is recorded once the sound is drawn.
 _QUIET_COMMANDS = {"", "help", "aide", "list", "sounds", "sons", "panel", "stats", "recap", "top",
@@ -1186,11 +1247,20 @@ _PSEUDO_ACTOR_ALIASES = {
     "planif": ACTOR_SCHEDULE, "schedule": ACTOR_SCHEDULE,
 }
 
+_BAN_USAGE = ("Usage : `/boomer_v3 ban @personne [durée] [motif]` — défaut 10 min, "
+              "ex. `30s`, `5m`, `1h30`\n"
+              "`/boomer_v3 unban @personne` | `/boomer_v3 ban` pour lister les personnes punies")
+
+
 _HISTORY_DEFAULT = 20
 _HISTORY_MAX = 50
 
 _USER_REF_RE = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^>]*)?>")
 _USER_ID_RE = re.compile(r"[UW][A-Z0-9]{6,}")
+
+
+def _is_interaction(body: dict) -> bool:
+    return bool(body.get("command")) or body.get("type") in ("block_actions", "message_action", "shortcut")
 
 
 def _history_text(body: dict, player: SoundPlayer) -> str | None:
@@ -1199,7 +1269,7 @@ def _history_text(body: dict, player: SoundPlayer) -> str | None:
         text = body.get("text", "").strip()
         sub, _, rest = text.partition(" ")
         sub = sub.lower()
-        if sub in _QUIET_COMMANDS or (sub in ("schedule", "tts")
+        if sub in _QUIET_COMMANDS or (sub in ("schedule", "tts", "ban", "bannir")
                                       and rest.strip().lower() in _QUIET_ARGS):
             return None
         return f"`{text}`"
@@ -1218,6 +1288,14 @@ def _history_text(body: dict, player: SoundPlayer) -> str | None:
         text = _clean_slack_text((body.get("message") or {}).get("text", ""))
         return f":speaking_head_in_silhouette: « {text} »" if text else None
     return None
+
+
+def _tell_user(body: dict, client: WebClient, respond, text: str):
+    """Only the user sees it. App Home clicks carry no response URL: the bot's DM then."""
+    if body.get("response_url"):
+        respond(text=text, response_type="ephemeral", replace_original=False)
+    else:
+        client.chat_postMessage(channel=_request_user_id(body), text=text)
 
 
 def _resolve_user(client: WebClient, ref: str) -> str | None:
@@ -1243,6 +1321,169 @@ def _resolve_user(client: WebClient, ref: str) -> str | None:
     except SlackApiError as exc:
         logger.warning("Cannot list the Slack users to find %r: %s", ref, exc)
     return None
+
+
+def _split_user_arg(arg: str) -> tuple[str, str]:
+    match = re.match(r"(<@[^>]+>|\S+)\s*(.*)", arg)
+    return (match.group(1), match.group(2).strip()) if match else ("", "")
+
+
+def _request_channel_id(body: dict) -> str | None:
+    return body.get("channel_id") or (body.get("channel") or {}).get("id")
+
+
+def _parse_ban_args(client: WebClient, arg: str) -> tuple[str, int, str] | str:
+    """(user ID, seconds, reason), or the error to show."""
+    ref, rest = _split_user_arg(arg)
+    words = rest.split()
+    seconds, reason = DEFAULT_BAN_SECONDS, rest
+    if words and words[0][0].isdigit():
+        # The longest leading run of words that reads as a duration: `10 min`, `1h 30`
+        for size in range(len(words), 0, -1):
+            parsed = parse_duration("".join(words[:size]))
+            if parsed:
+                seconds, reason = parsed, " ".join(words[size:])
+                break
+        else:
+            return f":x: Durée invalide : `{words[0]}`.\n{_BAN_USAGE}"
+    user_id = _resolve_user(client, ref)
+    if user_id is None:
+        return f":x: Personne ne correspond à `{ref}`.\n{_BAN_USAGE}"
+    return user_id, seconds, reason
+
+
+def _reason_suffix(reason: str) -> str:
+    return f"\n> Motif : {reason}" if reason else ""
+
+
+def _cmd_ban(respond, client: WebClient, player: SoundPlayer, moderation: Moderation,
+             command: dict, arg: str):
+    if arg.lower() in _QUIET_ARGS:
+        _list_bans(respond, moderation)
+        return
+    parsed = _parse_ban_args(client, arg)
+    if isinstance(parsed, str):
+        respond(parsed)
+        return
+    user_id, seconds, reason = parsed
+    if moderation.is_admin(user_id):
+        respond(":shield: Impossible de bannir un admin.")
+        return
+    moderation.ban(user_id, seconds)
+    logger.info("%s banned %s for %s", _user_label(command["user_id"], client),
+                _user_label(user_id, client), format_duration(seconds))
+    text = (f":no_entry: <@{user_id}> est mis au coin pendant {format_duration(seconds)}."
+            f"{_reason_suffix(reason)}")
+    if not _announce(client, player, text, command.get("channel_id")):
+        respond(text)
+
+
+def _list_bans(respond, moderation: Moderation):
+    bans = moderation.active_bans()
+    if not bans:
+        respond(f"Aucun ban en cours.\n{_BAN_USAGE}")
+        return
+    respond(":no_entry: Vilains garnements au coin :\n" + "\n".join(
+        f"• <@{user_id}> — encore {format_duration(left)}" for user_id, left in bans))
+
+
+def _cmd_ban_request(respond, client: WebClient, player: SoundPlayer, moderation: Moderation,
+                     command: dict, arg: str):
+    """Anyone can ask for a ban; the admins decide from a message only they see in the channel."""
+    if arg.lower() in _QUIET_ARGS:
+        _list_bans(respond, moderation)
+        return
+    if not moderation.admins:
+        respond(":shrug: Aucun admin n'est configuré pour juger ta demande.")
+        return
+    parsed = _parse_ban_args(client, arg)
+    if isinstance(parsed, str):
+        respond(parsed)
+        return
+    target, seconds, reason = parsed
+    requester = command["user_id"]
+    if moderation.is_admin(target):
+        respond(":shield: Impossible de bannir un admin.")
+        return
+    if moderation.ban_remaining(target):
+        respond(f"<@{target}> est déjà puni.")
+        return
+    request = moderation.add_request(requester, target, seconds, reason)
+    if request is None:
+        pending = moderation.pending_request(requester, target)
+        respond(":hourglass: Tu as déjà une demande en attente." if pending and pending.requester == requester
+                else f":hourglass: Une demande contre <@{target}> attend déjà la décision des juges.")
+        return
+    logger.info("%s asks to ban %s for %s", _user_label(requester, client),
+                _user_label(target, client), format_duration(seconds))
+    summary = (f"<@{requester}> demande le ban de <@{target}> pour "
+               f"{format_duration(seconds)}.{_reason_suffix(reason)}")
+    blocks = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": f":scales: {summary}"}},
+        {"type": "actions", "elements": [
+            {"type": "button", "text": {"type": "plain_text", "text": "Accepter"}, "style": "danger",
+             "action_id": "boomer_ban_accept", "value": request.id},
+            {"type": "button", "text": {"type": "plain_text", "text": "Refuser"},
+             "action_id": "boomer_ban_refuse", "value": request.id},
+        ]},
+    ]
+    channels = _announce_channels(player, command.get("channel_id"))
+    reached = sum(_send_to_admin(client, admin, channels, f"Demande de ban : {summary}", blocks)
+                  for admin in moderation.admins)
+    if not reached:
+        moderation.take_request(request.id)
+        respond(":x: Impossible de joindre les admins, demande abandonnée.")
+        return
+    announced = _announce(client, player,
+                          f":scales: {summary}\nEn attente de la décision d'un juge.", command.get("channel_id"))
+    if not announced:
+        respond(":scales: Demande transmise aux admins.")
+
+
+def _send_to_admin(client: WebClient, admin: str, channels: list[str], text: str, blocks: list) -> bool:
+    """Ephemeral in the first channel that takes it; Slack refuses one to a non-member,
+    so the bot's DM is the last resort."""
+    for channel in channels:
+        try:
+            client.chat_postEphemeral(channel=channel, user=admin, text=text, blocks=blocks)
+            return True
+        except SlackApiError as exc:
+            logger.info("Cannot show the ban request to admin %s in %s (%s)", admin, channel, exc)
+    try:
+        # Posting to a user ID lands in their DM with the bot
+        client.chat_postMessage(channel=admin, text=text, blocks=blocks)
+        return True
+    except SlackApiError as exc:
+        logger.warning("Cannot send the ban request to admin %s: %s", admin, exc)
+        return False
+
+
+def _ban_verdict(request, admin: str, accepted: bool) -> str:
+    if accepted:
+        verdict = (f":scales: <@{admin}> a accepté la demande de <@{request.requester}> : "
+                   f"<@{request.target}> est mis au coin pendant {format_duration(request.seconds)}."
+                   f"{_reason_suffix(request.reason)}")
+    else:
+        verdict = (f":scales: <@{admin}> a refusé la demande de <@{request.requester}> "
+                   f"contre <@{request.target}>.")
+    return verdict
+
+
+def _cmd_unban(respond, client: WebClient, player: SoundPlayer, moderation: Moderation,
+               command: dict, arg: str):
+    ref, _ = _split_user_arg(arg)
+    user_id = _resolve_user(client, ref) if ref else None
+    if user_id is None:
+        respond(f":x: Personne ne correspond à `{ref}`.\n{_BAN_USAGE}" if ref else _BAN_USAGE)
+        return
+    if not moderation.unban(user_id):
+        respond(f"<@{user_id}> n'a pas de ban en cours.")
+        return
+    logger.info("%s lifted the ban of %s", _user_label(command["user_id"], client),
+                _user_label(user_id, client))
+    text = f":white_check_mark: Le ban de <@{user_id}> est levé, espérons que la leçon a été apprise"
+    if not _announce(client, player, text, command.get("channel_id")):
+        respond(text)
 
 
 def _cmd_history(respond, history: History, arg: str, client: WebClient):
@@ -1279,30 +1520,35 @@ _EMOJI_RE = re.compile(r":[a-z0-9_+-]+:")
 _MAX_SPEAK_CHARS = 300
 
 
-def _announce_speak(client: WebClient, respond, player: SoundPlayer, shortcut: dict, text: str):
-    """Announce in the panel channel, where the soundboard activity is followed.
-
-    The shortcut fires from any message, often far from that channel, so the
-    message it came from is only a fallback, and the caller alone the last resort.
-    """
-    user = shortcut["user"]["id"]
+def _announce_channels(player: SoundPlayer, origin: str | None = None) -> list[str]:
+    """The panel channel, where the soundboard activity is followed, then the origin one."""
     info = player.get_panel_info() or player.get_panel_info("sounds_panel")
-    origin = (shortcut.get("channel") or {}).get("id")
     # dict.fromkeys keeps the order and drops the duplicate when both are the same channel
-    targets = [c for c in dict.fromkeys([info["channel"] if info else None, origin]) if c]
+    return [c for c in dict.fromkeys([info["channel"] if info else None, origin]) if c]
+
+
+def _announce(client: WebClient, player: SoundPlayer, text: str, origin: str | None = None) -> bool:
+    targets = _announce_channels(player, origin)
     for channel in targets:
         try:
-            client.chat_postMessage(
-                channel=channel,
-                text=f":speaking_head_in_silhouette: <@{user}> a fait lire à voix haute : « {text} »",
-            )
-            return
+            client.chat_postMessage(channel=channel, text=text)
+            return True
         except SlackApiError as e:
-            # not_in_channel / channel_not_found: the shortcut works everywhere, posting does not
+            # not_in_channel / channel_not_found: the request can come from anywhere, posting cannot
             logger.info("Cannot announce in %s (%s)", channel, e)
-    logger.info("Nowhere to announce the TTS (tried %s), answering %s privately",
-                targets or "no channel", user)
-    respond(f":speaking_head_in_silhouette: Lecture à voix haute de « {text} »")
+    logger.info("Nowhere to announce (tried %s)", targets or "no channel")
+    return False
+
+
+def _announce_speak(client: WebClient, respond, player: SoundPlayer, shortcut: dict, text: str):
+    """The shortcut fires from any message, often far from the panel channel, so the
+    message it came from is only a fallback, and the caller alone the last resort."""
+    user = shortcut["user"]["id"]
+    origin = (shortcut.get("channel") or {}).get("id")
+    if not _announce(client, player,
+                     f":speaking_head_in_silhouette: <@{user}> a fait lire à voix haute : « {text} »",
+                     origin):
+        respond(f":speaking_head_in_silhouette: Lecture à voix haute de « {text} »")
 
 
 def _clean_slack_text(text: str) -> str:
@@ -1492,6 +1738,10 @@ def _usage() -> str:
         "• `/boomer_v3 schedule <HH:MM> [jours] <son>` — planifier un son (ex: `09:00 lun-ven matin`)\n"
         "• `/boomer_v3 schedule list / cancel <id>` — gérer les planifications\n"
         "• `/boomer_v3 help` — afficher cette aide\n"
+        "• `/boomer_v3 ban @personne [durée] [motif]` — demander aux admins de bannir quelqu'un "
+        "(défaut 10 min, ex. `30s`, `1h30`) ; `ban` seul liste les personnes punies\n"
         "*Admins :*\n"
+        "• `/boomer_v3 ban @personne [durée] [motif]` — bannir directement\n"
+        "• `/boomer_v3 unban @personne` — lever un ban\n"
         "• `/boomer_v3 history [nombre] [@personne|midi|planif]` — qui a fait quoi"
     )

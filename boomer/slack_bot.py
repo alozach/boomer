@@ -16,6 +16,8 @@ from boomer import audio_effects, charts
 from boomer.audio_effects import EffectError
 from boomer.sound_player import (SoundPlayer, MIDI_ACTIONS, SUPPORTED_EXTENSIONS,
                                  can_decode, sniff_extension)
+from boomer.history import History
+from boomer.moderation import Moderation
 from boomer.stats import Stats, ACTOR_MIDI, ACTOR_SCHEDULE
 from boomer.tts_engine import TtsEngine, LANG_MAP
 from boomer.midi_listener import MidiListener
@@ -90,13 +92,17 @@ def _user_label(user_id: str, client: WebClient | None = None) -> str:
     return f"{name} ({user_id})" if name else user_id
 
 
+def _request_user_id(body: dict) -> str | None:
+    event = body.get("event") or {}
+    return ((body.get("user") or {}).get("id") if isinstance(body.get("user"), dict)
+            else body.get("user")) or body.get("user_id") or event.get("user")
+
+
 def _describe_request(body: dict, client: WebClient | None = None) -> str:
     """One-line summary of an incoming Slack payload, whatever its shape."""
     _remember_user(body)
     event = body.get("event") or {}
-    user_id = ((body.get("user") or {}).get("id") if isinstance(body.get("user"), dict)
-               else body.get("user")) or body.get("user_id") or event.get("user")
-    user = _user_label(user_id, client)
+    user = _user_label(_request_user_id(body), client)
     if body.get("command"):
         return f"command {body['command']} {body.get('text', '')!r} from {user}"
     actions = body.get("actions") or []
@@ -129,7 +135,8 @@ _volume_notice_lock = threading.Lock()
 
 
 def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
-                     scheduler: Scheduler, stats: Stats) -> App:
+                     scheduler: Scheduler, stats: Stats, history: History,
+                     moderation: Moderation) -> App:
     app = App(
         token=os.environ["SLACK_BOT_TOKEN"],
         signing_secret=os.environ["SLACK_SIGNING_SECRET"],
@@ -157,8 +164,16 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
                     body.get("type") or body.get("command") or "?",
                 )
 
+    @app.middleware
+    def record_history(body, next):
+        """Keep track of who did what."""
+        text = _history_text(body, player)
+        if text:
+            history.record(_request_user_id(body), text)
+        next()
+
     @app.command("/boomer_v3")
-    def handle_boomer(ack, command, say):
+    def handle_boomer(ack, command, say, respond):
         ack()
         text = command.get("text", "").strip()
         actor = _user_label(command.get("user_id"), slack_client)
@@ -173,7 +188,7 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
         elif action == "play":
             _cmd_play(say, player, stats, command["user_id"], arg)
         elif action in ("random", "aleatoire", "hasard"):
-            _cmd_random(say, player, stats, command["user_id"], arg)
+            _cmd_random(say, player, stats, history, command["user_id"], arg)
         elif action in ("stats", "recap", "top"):
             _cmd_stats(say, slack_client, stats, command["user_id"], command["channel_id"], arg)
         elif action == "add":
@@ -209,6 +224,10 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
             _refresh_stored_panel(slack_client, player)
         elif action == "schedule":
             _cmd_schedule(say, scheduler, player, arg)
+        elif action in _ADMIN_COMMANDS and not moderation.is_admin(command["user_id"]):
+            respond(":lock: Cette commande est réservée aux admins de Boomer.")
+        elif action in ("history", "historique", "log", "logs"):
+            _cmd_history(respond, history, arg, slack_client)
         else:
             say(f":x: Commande inconnue : `{action}`\n\n{_usage()}")
 
@@ -221,6 +240,7 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
         global _last_played
         _last_played = name
         stats.record(name, ACTOR_MIDI)
+        history.record(ACTOR_MIDI, f":arrow_forward: `{name}`")
         info = player.get_panel_info() or player.get_panel_info("sounds_panel")
         if not info:
             logger.info("MIDI played '%s' but no panel channel is known: nothing announced", name)
@@ -261,6 +281,7 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
             _in_background(_notify_from_surface, body, client, ":speaker: Aucun son disponible.")
             return
         if play_from_button(body, client, name):
+            history.record(body["user"]["id"], f":game_die: au hasard : `{name}` _(bouton)_")
             _in_background(_notify_from_surface, body, client, f":game_die: Au hasard : `{name}`")
         _in_background(_refresh_surface, body, client, player, stats)
 
@@ -312,6 +333,7 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
         global _last_played
         _last_played = sound
         stats.record(sound, ACTOR_SCHEDULE)
+        history.record(ACTOR_SCHEDULE, f":arrow_forward: `{sound}`")
         info = player.get_panel_info() or player.get_panel_info("sounds_panel")
         if not info:
             logger.info("Schedule played '%s' but no panel channel is known: nothing announced", sound)
@@ -440,7 +462,7 @@ def _cmd_play(say, player: SoundPlayer, stats: Stats, user: str, arg: str):
         stats.record(name, user)
 
 
-def _cmd_random(say, player: SoundPlayer, stats: Stats, user: str, arg: str):
+def _cmd_random(say, player: SoundPlayer, stats: Stats, history: History, user: str, arg: str):
     global _last_played
     try:
         _, effects = audio_effects.parse_effects(arg)
@@ -456,6 +478,7 @@ def _cmd_random(say, player: SoundPlayer, stats: Stats, user: str, arg: str):
         return
     _last_played = name
     stats.record(name, user)
+    history.record(user, f":game_die: au hasard : `{name}`{audio_effects.describe(effects)}")
     say(f":game_die: Au hasard : `{name}`{audio_effects.describe(effects)}")
 
 
@@ -1145,6 +1168,111 @@ def _cmd_stats(say, client: WebClient, stats: Stats, user: str, channel: str, ar
     say(f":bar_chart: *Tes stats — {_PERIOD_LABELS[period]}*\n{total} lectures.\n{top}")
 
 
+_ADMIN_COMMANDS = {"history", "historique", "log", "logs"}
+
+# They change nothing, so they stay out of the history. `random` is recorded once the sound is drawn.
+_QUIET_COMMANDS = {"", "help", "aide", "list", "sounds", "sons", "panel", "stats", "recap", "top",
+                   "history", "historique", "log", "logs", "random", "aleatoire", "hasard"}
+_QUIET_ARGS = {"", "list", "liste", "help", "aide"}
+
+_BUTTON_LABELS = {
+    "boomer_stop": ":black_square_for_stop: stop",
+    "boomer_vol_down": ":sound: volume −",
+    "boomer_vol_up": ":loud_sound: volume +",
+}
+
+_PSEUDO_ACTOR_ALIASES = {
+    "midi": ACTOR_MIDI, "clavier": ACTOR_MIDI,
+    "planif": ACTOR_SCHEDULE, "schedule": ACTOR_SCHEDULE,
+}
+
+_HISTORY_DEFAULT = 20
+_HISTORY_MAX = 50
+
+_USER_REF_RE = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^>]*)?>")
+_USER_ID_RE = re.compile(r"[UW][A-Z0-9]{6,}")
+
+
+def _history_text(body: dict, player: SoundPlayer) -> str | None:
+    """What a Slack request does, in a few words; None when it changes nothing worth tracing."""
+    if body.get("command"):
+        text = body.get("text", "").strip()
+        sub, _, rest = text.partition(" ")
+        sub = sub.lower()
+        if sub in _QUIET_COMMANDS or (sub in ("schedule", "tts")
+                                      and rest.strip().lower() in _QUIET_ARGS):
+            return None
+        return f"`{text}`"
+    actions = body.get("actions") or []
+    if actions:
+        action_id = actions[0].get("action_id", "")
+        if action_id.startswith("boomer_play_"):
+            return f":arrow_forward: `{actions[0].get('value')}` _(bouton)_"
+        if action_id == "boomer_mute_toggle":
+            # Read before the handler flips it
+            label = ":loud_sound: unmute" if player.is_muted() else ":mute: mute"
+        else:
+            label = _BUTTON_LABELS.get(action_id)
+        return f"{label} _(bouton)_" if label else None
+    if body.get("callback_id") == "boomer_speak":
+        text = _clean_slack_text((body.get("message") or {}).get("text", ""))
+        return f":speaking_head_in_silhouette: « {text} »" if text else None
+    return None
+
+
+def _resolve_user(client: WebClient, ref: str) -> str | None:
+    """A Slack user ID from a mention, a raw ID or a name."""
+    match = _USER_REF_RE.fullmatch(ref)
+    if match:
+        return match.group(1)
+    if _USER_ID_RE.fullmatch(ref):
+        return ref
+    # Without "Escape users" in the slash command settings, Slack sends the mention as plain text
+    name = ref.lstrip("@").lower()
+    for user_id, known in _user_names.items():
+        if known and known.lower() == name:
+            return user_id
+    try:
+        for page in client.users_list(limit=200):
+            for member in page["members"]:
+                profile = member.get("profile") or {}
+                names = (member.get("name"), profile.get("display_name"), member.get("real_name"))
+                if name in (n.lower() for n in names if n):
+                    _user_names.setdefault(member["id"], member.get("name") or name)
+                    return member["id"]
+    except SlackApiError as exc:
+        logger.warning("Cannot list the Slack users to find %r: %s", ref, exc)
+    return None
+
+
+def _cmd_history(respond, history: History, arg: str, client: WebClient):
+    limit, actor = _HISTORY_DEFAULT, None
+    for token in re.findall(r"<@[^>]+>|\S+", arg):
+        if token.isdigit():
+            limit = max(1, min(int(token), _HISTORY_MAX))
+        elif token.lower() in _PSEUDO_ACTOR_ALIASES:
+            actor = _PSEUDO_ACTOR_ALIASES[token.lower()]
+        else:
+            actor = _resolve_user(client, token)
+            if actor is None:
+                respond(f":x: Personne ne correspond à `{token}`.\n"
+                        "Usage : `/boomer_v3 history [nombre] [@personne|midi|planif]`")
+                return
+    entries = history.last(limit, actor)
+    title = ":scroll: *Historique*" + (f" — {_actor_label(actor)}" if actor else "")
+    if not entries:
+        respond(f"{title}\n_Rien pour le moment._")
+        return
+    today = datetime.date.today()
+    lines = []
+    # Oldest first, so the latest action sits right above the prompt
+    for timestamp, who, text in reversed(entries):
+        moment = datetime.datetime.fromtimestamp(timestamp)
+        when = moment.strftime("%H:%M" if moment.date() == today else "%d/%m %H:%M")
+        lines.append(f"`{when}` {_actor_label(who)} — {text}")
+    respond(f"{title}\n" + "\n".join(lines))
+
+
 _MENTION_RE = re.compile(r"<[@#!][^>|]+(?:\|([^>]*))?>")
 _LINK_RE = re.compile(r"<(https?://[^>|]+)(?:\|([^>]*))?>")
 _EMOJI_RE = re.compile(r":[a-z0-9_+-]+:")
@@ -1363,5 +1491,7 @@ def _usage() -> str:
         "• `/boomer_v3 mute / unmute` — couper / rétablir le son\n"
         "• `/boomer_v3 schedule <HH:MM> [jours] <son>` — planifier un son (ex: `09:00 lun-ven matin`)\n"
         "• `/boomer_v3 schedule list / cancel <id>` — gérer les planifications\n"
-        "• `/boomer_v3 help` — afficher cette aide"
+        "• `/boomer_v3 help` — afficher cette aide\n"
+        "*Admins :*\n"
+        "• `/boomer_v3 history [nombre] [@personne|midi|planif]` — qui a fait quoi"
     )

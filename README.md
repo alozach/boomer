@@ -22,6 +22,7 @@ de synthèse ou planifier des lectures automatiques.
   26 langues, vitesse réglable, déclenchable sur n'importe quel message via un raccourci.
 - **Planification** — jouer un son à une heure donnée, tous les jours ou sur des jours choisis.
 - **Statistiques** — qui a joué quoi, combien de fois, et récap automatique le vendredi.
+- **Historique** — les admins consultent qui a fait quoi, sans passer par les logs.
 - **Recherche approximative** — les noms de sons sont résolus en *fuzzy matching*,
   `/boomer_v3 play maarc` trouve `maaaarc`.
 
@@ -37,10 +38,12 @@ de synthèse ou planifier des lectures automatiques.
 | [boomer/tts_engine.py](boomer/tts_engine.py) | Synthèse vocale edge-tts (nécessite une connexion internet) |
 | [boomer/scheduler.py](boomer/scheduler.py) | Planifications persistées dans `schedules.json` |
 | [boomer/stats.py](boomer/stats.py) | Historique des lectures persisté dans `stats.json` |
+| [boomer/history.py](boomer/history.py) | Journal des actions (qui a fait quoi) persisté dans `history.json` |
+| [boomer/moderation.py](boomer/moderation.py) | Admins |
 
-L'état persistant vit dans trois fichiers JSON à la racine : `config.json`
-(mappings MIDI + références des panneaux Slack), `schedules.json` (planifications)
-et `stats.json` (historique des lectures).
+L'état persistant vit dans quatre fichiers JSON à la racine : `config.json`
+(mappings MIDI + références des panneaux Slack), `schedules.json` (planifications),
+`stats.json` (historique des lectures) et `history.json` (journal des actions).
 Ces fichiers sont écrits par le bot au fil de l'eau et ne sont donc pas versionnés :
 seul le modèle `config.example.json` l'est, copié vers `config.json` à l'installation.
 
@@ -141,6 +144,22 @@ nombre de lectures, et les personnes qui les déclenchent, avec le son que chacu
 
 Le vendredi à 17 h, Boomer poste de lui-même le récap de la semaine dans le canal du dernier
 panneau enregistré.
+
+### Historique
+
+Les admins sont listés dans `BOOMER_ADMINS` (IDs Slack séparés par des virgules, dans
+`.env`). Sans cette variable, personne n'est admin et un warning le signale au démarrage.
+L'ID d'une personne se copie depuis son profil Slack (⋮ → *Copier l'ID de membre*).
+
+`/boomer_v3 history [nombre] [@personne|midi|planif]` (admin) affiche les dernières actions
+(20 par défaut, 50 au plus) : sons joués, stop, mute, volume, TTS, ajouts, renommages…
+Les commandes en lecture seule (`list`, `stats`, `help`…) n'y figurent pas. Les 1000
+dernières actions sont conservées dans `history.json`. La réponse n'est visible que de qui
+la demande.
+
+Pour les mentions `@personne`, activer *Escape channels, users, and links* dans la
+configuration de la slash command est plus fiable ; sans elle, Boomer cherche la personne
+par son nom.
 
 ### Lire un message à voix haute
 

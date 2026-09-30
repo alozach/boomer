@@ -23,6 +23,8 @@ from boomer.tts_engine import TtsEngine
 from boomer.slack_bot import create_slack_app
 from boomer.scheduler import Scheduler
 from boomer.stats import Stats
+from boomer.history import History
+from boomer.moderation import Moderation
 
 
 def main():
@@ -31,13 +33,15 @@ def main():
     midi = MidiListener(player)
     scheduler = Scheduler(player)
     stats = Stats("stats.json")
+    history = History("history.json")
+    moderation = Moderation()
 
     logging.info("Boomer starting (log level %s)", _LOG_LEVEL)
     midi_thread = threading.Thread(target=midi.start, daemon=True, name="midi-listener")
     midi_thread.start()
     scheduler.start()
 
-    app = create_slack_app(player, tts, midi, scheduler, stats)
+    app = create_slack_app(player, tts, midi, scheduler, stats, history, moderation)
 
     app_token = os.getenv("SLACK_APP_TOKEN")
     if app_token:
@@ -49,6 +53,7 @@ def main():
             midi.stop()
             scheduler.stop()
             stats.flush()
+            history.flush()
             handler.close()
             os._exit(0)
 
@@ -62,6 +67,7 @@ def main():
             logging.info("Shutting down...")
             midi.stop()
             stats.flush()
+            history.flush()
 
         signal.signal(signal.SIGINT, shutdown)
         signal.signal(signal.SIGTERM, shutdown)

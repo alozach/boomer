@@ -100,8 +100,7 @@ Puis `make start`.
 | `/boomer_v3 stats [période] [moi]` | Classement des sons et des personnes |
 | `/boomer_v3 stop` | Arrêter la lecture en cours |
 | `/boomer_v3 list` | Lister les sons disponibles et leur nombre de lectures |
-| `/boomer_v3 sounds` | Panneau interactif, un bouton par son |
-| `/boomer_v3 panel` | Panneau de contrôle (stop, mute, volume, aléatoire) |
+| `/boomer_v3 panel` (ou `sounds`) | Panneau interactif : contrôles (stop, mute, volume, aléatoire) et un bouton par son |
 | `/boomer_v3 add <nom>` | Ajouter un son (envoyer ensuite le fichier dans le canal) |
 | `/boomer_v3 rename <ancien> <nouveau>` | Renommer un son (met à jour les mappings MIDI) |
 | `/boomer_v3 delete <nom>` | Supprimer un son |
@@ -202,9 +201,9 @@ est tronqué à 300 caractères.
 
 ### Onglet Accueil
 
-L'onglet *Accueil* de l'app affiche en permanence le panneau de contrôle (stop, mute,
-volume, aléatoire), puis les boutons de tous les sons. Il se met à jour à chaque ouverture et après
-chaque clic, sans avoir à reposter un panneau dans un canal.
+L'onglet *Accueil* de l'app affiche en permanence le même panneau que `/boomer_v3 panel`.
+Il se met à jour à chaque ouverture et après chaque clic, sans avoir à reposter un panneau
+dans un canal.
 
 ## Exploitation
 
@@ -223,8 +222,9 @@ make run        # lancer en avant-plan sans systemd (debug)
 - Le volume par défaut est de 15 % : les enceintes visées saturent vite. Il monte par pas de 2 %.
 - Les changements de volume au clavier MIDI sont annoncés dans le canal une fois la rafale
   terminée (1,5 s sans nouvel appui) : une montée de 2 à 20 % donne un message, pas neuf.
-  L'annonce a besoin d'un canal connu, c'est-à-dire d'un `/boomer_v3 panel` ou `sounds`
-  posté au moins une fois.
+  L'annonce a besoin d'un canal connu, c'est-à-dire d'un `/boomer_v3 panel` posté au moins
+  une fois. Seul le dernier panneau posté est suivi : c'est lui qui est tenu à jour et dont le
+  canal reçoit les annonces.
 - Les effets sont calculés en mémoire avec numpy : les fichiers d'origine ne sont jamais modifiés.
 - Toute nouvelle lecture (bouton, commande, touche MIDI) interrompt l'enchaînement en cours.
 - `stats.json` est écrit par lots (10 s) pour épargner la carte SD, et à l'arrêt du service.

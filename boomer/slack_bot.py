@@ -51,8 +51,9 @@ _SPARK = "▁▂▃▄▅▆▇█"
 _CHART_LABEL_WIDTH = 18
 # The PNG charts own the working-day range; the sparklines follow it
 
-# Slack caps a view at 100 blocks; keep a margin for the control panel
-_MAX_HOME_BLOCKS = 90
+# Slack caps a view at 100 blocks and a message at 50
+_MAX_HOME_BLOCKS = 100
+_MAX_MESSAGE_BLOCKS = 50
 
 # Above this, a request is worth a warning in the logs
 _SLOW_REQUEST_SECONDS = 1.0
@@ -151,6 +152,13 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
     # Reusable WebClient for async callbacks outside the Slack request context
     slack_client = WebClient(token=os.environ["SLACK_BOT_TOKEN"])
 
+    # The sounds panel used to be a message of its own: it becomes the panel, redrawn at the next refresh
+    legacy = player.get_panel_info("sounds_panel")
+    if legacy:
+        if not player.get_panel_info():
+            player.set_panel_info(legacy["channel"], legacy["ts"])
+        player.clear_panel_info("sounds_panel")
+
     @app.middleware
     def log_requests(body, client, next):
         """Trace what Slack sends us, then split the blame for a late message:
@@ -230,15 +238,13 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
             _cmd_rename(say, player, arg)
         elif action == "list":
             _cmd_list(say, player, stats)
-        elif action in ("sounds", "sons"):
-            _cmd_sounds_panel(say, player, command["channel_id"])
         elif action in ("delete", "supprimer", "remove"):
             _cmd_delete(say, player, arg)
         elif action == "map":
             _cmd_map(say, slack_client, player, midi, command["channel_id"], command["user_id"], arg)
         elif action == "tts":
             _cmd_tts(say, tts, stats, command["user_id"], arg)
-        elif action == "panel":
+        elif action in ("panel", "sounds", "sons"):
             _cmd_panel(say, player, command["channel_id"])
         elif action == "stop":
             player.stop(actor)
@@ -280,7 +286,7 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
         _last_played = name
         stats.record(name, ACTOR_MIDI)
         history.record(ACTOR_MIDI, f":arrow_forward: `{name}`")
-        info = player.get_panel_info() or player.get_panel_info("sounds_panel")
+        info = player.get_panel_info()
         if not info:
             logger.info("MIDI played '%s' but no panel channel is known: nothing announced", name)
             return
@@ -303,7 +309,6 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
             return False
         _last_played = sound_name
         stats.record(sound_name, body["user"]["id"])
-        _in_background(_refresh_sounds_panel, client, player)
         return True
 
     @app.action(re.compile(r"^boomer_play_\d+$"))
@@ -400,7 +405,7 @@ def create_slack_app(player: SoundPlayer, tts: TtsEngine, midi: MidiListener,
         _last_played = sound
         stats.record(sound, ACTOR_SCHEDULE)
         history.record(ACTOR_SCHEDULE, f":arrow_forward: `{sound}`")
-        info = player.get_panel_info() or player.get_panel_info("sounds_panel")
+        info = player.get_panel_info()
         if not info:
             logger.info("Schedule played '%s' but no panel channel is known: nothing announced", sound)
             return
@@ -440,7 +445,7 @@ def _start_weekly_recap(client: WebClient, player: SoundPlayer, stats: Stats):
     """Post the week's leaderboard in the panel channel, then re-arm for next week."""
     def fire():
         _start_weekly_recap(client, player, stats)
-        info = player.get_panel_info() or player.get_panel_info("sounds_panel")
+        info = player.get_panel_info()
         if not info:
             logger.info("Weekly recap skipped: no known panel channel.")
             return
@@ -610,7 +615,7 @@ def _cmd_rename(say, player: SoundPlayer, arg: str):
         say(f":x: {reason}")
 
 
-def _panel_blocks(player: SoundPlayer) -> list:
+def _control_blocks(player: SoundPlayer) -> list:
     vol = int(player.get_volume() * 100)
     muted = player.is_muted()
     status = f":mute: Muté | Volume : {vol}%" if muted else f":loud_sound: Volume : {vol}%"
@@ -652,8 +657,31 @@ def _panel_blocks(player: SoundPlayer) -> list:
     ]
 
 
+def _panel_blocks(player: SoundPlayer, max_blocks: int = _MAX_MESSAGE_BLOCKS,
+                  footer: str | None = None) -> list:
+    """Controls, then one button per sound: the same panel in a channel and on the App Home."""
+    header = ":musical_note: *Sons disponibles*"
+    if _last_played:
+        header += f"  |  :arrow_forward: `{_last_played}`"
+    blocks = _control_blocks(player)
+    blocks.append({"type": "divider"})
+    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": header}})
+    buttons = _sound_button_blocks(player)
+    # One block kept for the footer
+    room = max_blocks - len(blocks) - 1
+    if len(buttons) > room:
+        hidden = len(player.list_sounds()) - 5 * room
+        logger.warning("Panel too long for Slack: %d sound(s) left out", hidden)
+        buttons = buttons[:room]
+        footer = f"… et {hidden} autres sons : `/boomer_v3 list`" + (f"  |  {footer}" if footer else "")
+    blocks.extend(buttons)
+    if footer:
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": footer}]})
+    return blocks
+
+
 def _cmd_panel(say, player: SoundPlayer, channel: str):
-    result = say(blocks=_panel_blocks(player), text="Boomer Control Panel")
+    result = say(blocks=_panel_blocks(player), text="Boomer")
     if result and result.get("ts"):
         player.set_panel_info(channel, result["ts"])
 
@@ -667,10 +695,10 @@ def _refresh_stored_panel(client: WebClient, player: SoundPlayer):
             channel=info["channel"],
             ts=info["ts"],
             blocks=_panel_blocks(player),
-            text="Boomer Control Panel",
+            text="Boomer",
         )
     except Exception:
-        logger.exception("Cannot refresh the control panel in %s, forgetting it", info["channel"])
+        logger.exception("Cannot refresh the panel in %s, forgetting it", info["channel"])
         player.clear_panel_info()
 
 
@@ -692,7 +720,7 @@ def _post_volume_notice(client: WebClient, player: SoundPlayer, action: str):
     with _volume_notice_lock:
         _volume_notice_timer = None
     _refresh_stored_panel(client, player)
-    info = player.get_panel_info() or player.get_panel_info("sounds_panel")
+    info = player.get_panel_info()
     if not info:
         logger.info("Volume changed from MIDI but no panel channel is known.")
         return
@@ -730,41 +758,24 @@ def _in_background(fn, *args, **kwargs):
     threading.Thread(target=run, daemon=True).start()
 
 
-def _refresh_sounds_panel(client: WebClient, player: SoundPlayer):
-    info = player.get_panel_info("sounds_panel")
-    if not info:
-        return
-    try:
-        client.chat_update(
-            channel=info["channel"],
-            ts=info["ts"],
-            blocks=_sounds_panel_blocks(player, last_played=_last_played),
-            text="Sons disponibles",
-        )
-    except Exception:
-        logger.exception("Cannot refresh the sounds panel in %s, forgetting it", info["channel"])
-        player.clear_panel_info("sounds_panel")
-
-
 def _is_home(body: dict) -> bool:
     return body.get("container", {}).get("type") == "view"
 
 
 def _refresh_surface(body: dict, client: WebClient, player: SoundPlayer, stats: Stats):
-    """Redraw whichever surface the button was clicked from: App Home or a posted panel."""
+    """Redraw the surface the button was clicked from, and the stored panel if it is another one."""
+    clicked_stored = False
     if _is_home(body):
         _publish_home(client, player, stats, body["user"]["id"])
-        return
-    message = body.get("message") or {}
-    channel = (body.get("channel") or {}).get("id")
-    if not message.get("ts") or not channel:
-        return
-    # The sounds panel carries its own blocks; only the control panel is refreshed here
-    if any(b.get("action_id", "").startswith("boomer_play_")
-           for block in message.get("blocks", []) for b in block.get("elements", [])):
-        return
-    client.chat_update(channel=channel, ts=message["ts"], blocks=_panel_blocks(player),
-                       text="Boomer Control Panel")
+    else:
+        message = body.get("message") or {}
+        channel = (body.get("channel") or {}).get("id")
+        if message.get("ts") and channel:
+            client.chat_update(channel=channel, ts=message["ts"], blocks=_panel_blocks(player),
+                               text="Boomer")
+            clicked_stored = player.get_panel_info() == {"channel": channel, "ts": message["ts"]}
+    if not clicked_stored:
+        _refresh_stored_panel(client, player)
 
 
 def _notify_from_surface(body: dict, client: WebClient, text: str):
@@ -776,24 +787,10 @@ def _notify_from_surface(body: dict, client: WebClient, text: str):
 
 
 def _home_view(player: SoundPlayer, stats: Stats) -> dict:
-    header = ":musical_note: *Sons disponibles*"
-    if _last_played:
-        header += f"  |  :arrow_forward: `{_last_played}`"
-
-    blocks: list = _panel_blocks(player)
-    blocks.append({"type": "divider"})
-    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": header}})
-    blocks.extend(_sound_button_blocks(player)[:_MAX_HOME_BLOCKS])
     plays = stats.total("week")
     hint = (f"{plays} lectures cette semaine  |  " if plays else "")
-    blocks.append({
-        "type": "context",
-        "elements": [{
-            "type": "mrkdwn",
-            "text": hint + "`/boomer_v3 play a+b+c --reverse` pour enchaîner  |  `/boomer_v3 stats` pour le classement",
-        }],
-    })
-    return {"type": "home", "blocks": blocks}
+    footer = hint + "`/boomer_v3 play a+b+c --reverse` pour enchaîner  |  `/boomer_v3 stats` pour le classement"
+    return {"type": "home", "blocks": _panel_blocks(player, _MAX_HOME_BLOCKS, footer)}
 
 
 def _publish_home(client: WebClient, player: SoundPlayer, stats: Stats, user_id: str):
@@ -938,19 +935,6 @@ def _sound_button_blocks(player: SoundPlayer) -> list:
             ],
         })
     return blocks
-
-
-def _sounds_panel_blocks(player: SoundPlayer, last_played: str | None = None) -> list:
-    header = ":musical_note: *Sons disponibles*"
-    if last_played:
-        header += f"  |  :arrow_forward: `{last_played}`"
-    return [{"type": "section", "text": {"type": "mrkdwn", "text": header}}] + _sound_button_blocks(player)
-
-
-def _cmd_sounds_panel(say, player: SoundPlayer, channel: str):
-    result = say(blocks=_sounds_panel_blocks(player), text="Sons disponibles")
-    if result and result.get("ts"):
-        player.set_panel_info(channel, result["ts"], key="sounds_panel")
 
 
 def _cmd_delete(say, player: SoundPlayer, name: str):
@@ -1534,7 +1518,7 @@ _MAX_SPEAK_CHARS = 300
 
 def _announce_channels(player: SoundPlayer, origin: str | None = None) -> list[str]:
     """The panel channel, where the soundboard activity is followed, then the origin one."""
-    info = player.get_panel_info() or player.get_panel_info("sounds_panel")
+    info = player.get_panel_info()
     # dict.fromkeys keeps the order and drops the duplicate when both are the same channel
     return [c for c in dict.fromkeys([info["channel"] if info else None, origin]) if c]
 
@@ -1741,8 +1725,7 @@ def _usage() -> str:
         "(guillemets si le nom contient des espaces)\n"
         "• `/boomer_v3 map <nom>` — assigner un son à une touche MIDI (interactif)\n"
         "• `/boomer_v3 delete <nom>` — supprimer un son\n"
-        "• `/boomer_v3 panel` — afficher le panneau de contrôle interactif\n"
-        "• `/boomer_v3 sounds` — panneau interactif avec un bouton par son\n"
+        "• `/boomer_v3 panel` — panneau interactif : contrôles et un bouton par son\n"
         "• `/boomer_v3 tts <texte> [lang]` — synthèse vocale (lang: fr, en, es, de… défaut: fr)\n"
         "• `/boomer_v3 tts rate <50-400>` — régler la vitesse TTS\n"
         "• `/boomer_v3 tts list` — lister les langues disponibles\n"
